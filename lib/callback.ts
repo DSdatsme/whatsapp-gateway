@@ -16,8 +16,12 @@ export async function deliverCallback(
     }
   }
   // Best-effort only: the reply is already durably stored and recoverable via polling.
-  console.warn(
-    `Failed to deliver callback after ${attempts} attempts`,
-    { callbackUrl, correlationId: payload.correlationId }
-  );
+  try {
+    console.warn(
+      `Failed to deliver callback after ${attempts} attempts`,
+      { callbackUrl, correlationId: payload.correlationId }
+    );
+  } catch {
+    // Silence any logging failure - deliverCallback must never throw under any circumstance
+  }
 }
