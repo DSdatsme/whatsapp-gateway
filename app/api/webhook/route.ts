@@ -42,14 +42,14 @@ export async function POST(request: Request): Promise<Response> {
 
   const resolved = await resolveCorrelationId({ buttonId, contextMessageId });
   if (!resolved) {
-    console.log("No correlation resolved - stale/duplicate/unmatched reply");
+    console.log("Webhook ack without action - no matching pending reply");
     return NextResponse.json({ ok: true });
   }
 
   const value = resolved.decision ?? replyText;
   const updated = await markReplied(resolved.correlationId, value);
   if (!updated) {
-    console.log("Reply already marked - stale/duplicate reply");
+    console.log("Webhook ack without action - no matching pending reply");
     return NextResponse.json({ ok: true });
   }
 
