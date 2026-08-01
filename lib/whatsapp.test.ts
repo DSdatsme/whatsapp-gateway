@@ -40,6 +40,14 @@ describe("sendWhatsAppMessage", () => {
       sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"))
     ).rejects.toThrow(WhatsAppSendError);
   });
+
+  it("throws WhatsAppSendError on network failure", async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error("network down")) as unknown as typeof fetch;
+
+    await expect(
+      sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"))
+    ).rejects.toThrow(WhatsAppSendError);
+  });
 });
 
 describe("buildApprovalPayload", () => {

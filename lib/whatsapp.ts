@@ -12,22 +12,31 @@ export async function sendWhatsAppMessage(
 
   console.log(`Sending WhatsApp message of type: ${payload.type}`);
 
-  const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneId}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneId}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
 
-  const data = await res.json();
-  if (!res.ok) {
-    const error = new WhatsAppSendError(data?.error?.message ?? `Graph API error (${res.status})`);
+    const data = await res.json();
+    if (!res.ok) {
+      const error = new WhatsAppSendError(data?.error?.message ?? `Graph API error (${res.status})`);
+      console.error(`WhatsApp send failed: ${error.message}`);
+      throw error;
+    }
+    return { messageId: data.messages[0].id };
+  } catch (err) {
+    if (err instanceof WhatsAppSendError) {
+      throw err;
+    }
+    const error = new WhatsAppSendError(err instanceof Error ? err.message : "Unknown error");
     console.error(`WhatsApp send failed: ${error.message}`);
     throw error;
   }
-  return { messageId: data.messages[0].id };
 }
 
 export function buildNotificationPayload(to: string, text: string): Record<string, unknown> {
