@@ -58,6 +58,7 @@ async function resolveMostRecentPendingPrompt(): Promise<string | null> {
     if (record && record.status === "pending") return top;
 
     // Stale entry (expired or already resolved) - drop and check the next one.
+    console.log(`[correlation] dropping stale pending-prompt entry: ${top}`);
     await redis.zrem(PENDING_PROMPTS_ZSET, top);
   }
 }

@@ -64,6 +64,18 @@ describe("resolveCorrelationId", () => {
     expect(resolved).toEqual({ correlationId: "newer" });
   });
 
+  it("skips stale zset entries (expired pending records) and resolves to next valid one", async () => {
+    await createPendingRecord("older", { type: "prompt", whatsappMessageId: "wamid.1", createdAt: 1 });
+    await createPendingRecord("newer", { type: "prompt", whatsappMessageId: "wamid.2", createdAt: 2 });
+    // Simulate expiry: remove newer's backing record but leave it in the zset (what TTL does in real Redis)
+    store.delete("pending:newer");
+    const resolved = await resolveCorrelationId({});
+    expect(resolved).toEqual({ correlationId: "older" });
+    // Verify the stale entry was removed from the zset
+    const zset = zsets.get("pending-prompts");
+    expect(zset?.has("newer")).toBe(false);
+  });
+
   it("returns null when nothing is pending and there is no context", async () => {
     const resolved = await resolveCorrelationId({});
     expect(resolved).toBeNull();
