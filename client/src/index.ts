@@ -6,12 +6,14 @@ export interface GatewayClientOptions {
 export interface SendOptions {
   correlationId?: string;
   callbackUrl?: string;
-  pollIntervalsMs?: number[];
+  pollIntervalMs?: number;
+  timeoutMs?: number;
 }
 
 export class GatewayError extends Error {}
 
-const DEFAULT_POLL_INTERVALS_MS = [2000, 5000, 10000];
+const DEFAULT_POLL_INTERVAL_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 export function createClient(options: GatewayClientOptions) {
   async function send(body: Record<string, unknown>): Promise<{ correlationId: string }> {
@@ -28,12 +30,20 @@ export function createClient(options: GatewayClientOptions) {
     return data;
   }
 
-  async function pollReply(correlationId: string, intervalsMs: number[]): Promise<string> {
-    for (const delay of intervalsMs) {
-      await new Promise((resolve) => setTimeout(resolve, delay));
+  async function pollReply(
+    correlationId: string,
+    pollIntervalMs: number,
+    timeoutMs: number
+  ): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       const res = await fetch(`${options.baseUrl}/api/replies/${correlationId}`, {
         headers: { Authorization: `Bearer ${options.apiKey}` },
       });
+      if (!res.ok) {
+        throw new GatewayError(`poll failed (${res.status})`);
+      }
       const data = await res.json();
       if (data.status === "replied") return data.value;
     }
@@ -56,7 +66,11 @@ export function createClient(options: GatewayClientOptions) {
       text,
       correlationId: opts.correlationId,
     });
-    const value = await pollReply(correlationId, opts.pollIntervalsMs ?? DEFAULT_POLL_INTERVALS_MS);
+    const value = await pollReply(
+      correlationId,
+      opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    );
     return value === "approve";
   }
 
@@ -72,7 +86,11 @@ export function createClient(options: GatewayClientOptions) {
       text,
       correlationId: opts.correlationId,
     });
-    return pollReply(correlationId, opts.pollIntervalsMs ?? DEFAULT_POLL_INTERVALS_MS);
+    return pollReply(
+      correlationId,
+      opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    );
   }
 
   return { sendNotification, sendApproval, sendPrompt };

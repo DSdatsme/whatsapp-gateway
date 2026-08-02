@@ -44,9 +44,28 @@ describe("POST /api/send", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects a malformed JSON body", async () => {
+    const malformedRequest = new Request("https://gateway.example/api/send", {
+      method: "POST",
+      headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+      body: "{not valid json",
+    });
+    const res = await POST(malformedRequest);
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error?: string };
+    expect(data.error).toMatch(/invalid JSON/i);
+  });
+
+  it("rejects an invalid type value", async () => {
+    const res = await POST(request({ type: "bogus", text: "hi" }));
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error?: string };
+    expect(data.error).toMatch(/type must be one of/i);
+  });
+
   it("sends a notification and returns a generated correlationId", async () => {
     const res = await POST(request({ type: "notification", text: "hi" }));
-    const data = await res.json();
+    const data = (await res.json()) as { correlationId?: string; error?: string };
     expect(res.status).toBe(200);
     expect(typeof data.correlationId).toBe("string");
     expect(sendWhatsAppMessage).toHaveBeenCalled();

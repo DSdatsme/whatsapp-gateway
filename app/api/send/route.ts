@@ -25,9 +25,21 @@ export async function POST(request: Request): Promise<Response> {
   const authError = requireApiKey(request);
   if (authError) return authError;
 
-  const body = (await request.json()) as Partial<SendRequestBody>;
+  let body: Partial<SendRequestBody>;
+  try {
+    body = (await request.json()) as Partial<SendRequestBody>;
+  } catch {
+    return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+  }
+
   if (!body.type || !body.text) {
     return NextResponse.json({ error: "type and text are required" }, { status: 400 });
+  }
+  if (!["notification", "approval", "prompt"].includes(body.type)) {
+    return NextResponse.json(
+      { error: "type must be one of: notification, approval, prompt" },
+      { status: 400 }
+    );
   }
 
   const correlationId = body.correlationId ?? randomUUID();

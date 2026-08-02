@@ -1,5 +1,5 @@
 import { redis } from "@/lib/redis";
-import type { PendingRecord, PendingType } from "@/lib/types";
+import type { PendingRecord } from "@/lib/types";
 
 const PENDING_TTL_SECONDS = 60 * 60 * 24;
 const PENDING_PROMPTS_ZSET = "pending-prompts";
@@ -24,6 +24,11 @@ export async function createPendingRecord(
       ex: PENDING_TTL_SECONDS,
     });
     await redis.zadd(PENDING_PROMPTS_ZSET, { score: record.createdAt, member: correlationId });
+    await redis.zremrangebyscore(
+      PENDING_PROMPTS_ZSET,
+      0,
+      Date.now() - PENDING_TTL_SECONDS * 1000
+    );
   }
 }
 
@@ -66,7 +71,10 @@ async function resolveMostRecentPendingPrompt(): Promise<string | null> {
 function resolveFromButton(
   buttonId: string
 ): { correlationId: string; decision: "approve" | "deny" } | null {
-  const [decision, correlationId] = buttonId.split(":");
+  const separatorIndex = buttonId.indexOf(":");
+  if (separatorIndex === -1) return null;
+  const decision = buttonId.slice(0, separatorIndex);
+  const correlationId = buttonId.slice(separatorIndex + 1);
   if (decision !== "approve" && decision !== "deny") return null;
   if (!correlationId) return null;
   return { correlationId, decision };

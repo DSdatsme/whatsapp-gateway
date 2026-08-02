@@ -4,6 +4,11 @@ const GRAPH_API_VERSION = "v21.0";
 
 export class WhatsAppSendError extends Error {}
 
+interface GraphApiResponse {
+  messages?: { id: string }[];
+  error?: { message: string };
+}
+
 export async function sendWhatsAppMessage(
   payload: Record<string, unknown>
 ): Promise<{ messageId: string }> {
@@ -22,13 +27,13 @@ export async function sendWhatsAppMessage(
       body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
+    const data = (await res.json()) as GraphApiResponse;
     if (!res.ok) {
       const error = new WhatsAppSendError(data?.error?.message ?? `Graph API error (${res.status})`);
       console.error(`WhatsApp send failed: ${error.message}`);
       throw error;
     }
-    return { messageId: data.messages[0].id };
+    return { messageId: data.messages![0].id };
   } catch (err) {
     if (err instanceof WhatsAppSendError) {
       throw err;

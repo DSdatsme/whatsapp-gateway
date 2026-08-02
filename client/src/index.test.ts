@@ -18,7 +18,7 @@ describe("sendApproval", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ status: "replied", value: "approve" }) });
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    const result = await client.sendApproval("proceed?", { pollIntervalsMs: [0, 0] });
+    const result = await client.sendApproval("proceed?", { pollIntervalMs: 0, timeoutMs: 200 });
     expect(result).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -30,7 +30,9 @@ describe("sendApproval", () => {
       .mockResolvedValue({ ok: true, json: async () => ({ status: "pending" }) });
     global.fetch = fetchMock as unknown as typeof fetch;
 
-    await expect(client.sendApproval("proceed?", { pollIntervalsMs: [0, 0] })).rejects.toThrow(/timed out/);
+    await expect(
+      client.sendApproval("proceed?", { pollIntervalMs: 5, timeoutMs: 30 })
+    ).rejects.toThrow(/timed out/);
   });
 
   it("rejects combining callbackUrl with the polling convenience method", async () => {
