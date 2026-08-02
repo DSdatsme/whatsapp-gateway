@@ -93,6 +93,24 @@ Graph API returns `200` with a real message ID as soon as it *accepts* a message
 1. **Using a test/sandbox WhatsApp number.** The free test number Meta provisions in **WhatsApp → API Setup** can only message phone numbers explicitly added and OTP-verified as test recipients. Add the recipient there (**API Setup → "To" field → Manage phone number list**) before expecting any delivery.
 2. **The 24-hour customer service window is closed.** WhatsApp only allows free-form messages (which is everything this gateway sends — `notification`, `approval`, and `prompt` are all free-form, not templates) to a recipient who has messaged the business number within the last 24 hours. If the recipient hasn't messaged first (or it's been >24h since they last did), Graph API still returns 200, but the message is dropped. Have the recipient send any message to the business number to open the window, then retry. A pre-approved **template** message is the only message type exempt from this rule — useful for confirming your token/phone ID/recipient setup is otherwise correct without needing an open session.
 
+## Troubleshooting: sends arrive but replies never reach `/api/webhook`
+
+Registering the callback URL and subscribing to the `messages` field (both covered above) configure your **app's** webhook — but that's not enough on its own. The WhatsApp Business Account (WABA) that owns your phone number also has to be explicitly told to route its events through *this* app, which is a separate step Meta doesn't surface clearly in the dashboard:
+
+```bash
+curl -X POST "https://graph.facebook.com/v21.0/<WABA_ID>/subscribed_apps?access_token=<WHATSAPP_TOKEN>"
+```
+
+If you're not sure whether this is already done, check first:
+
+```bash
+curl "https://graph.facebook.com/v21.0/<WABA_ID>/subscribed_apps?access_token=<WHATSAPP_TOKEN>"
+```
+
+If the response doesn't list your app, that's why button taps and replies never show up in `POST /api/webhook` even though sending works fine. New WABAs can come pre-subscribed to an unrelated default app instead of yours — subscribing your app doesn't remove others, so this is safe to run even if you're unsure.
+
+To find your WABA ID: open **Meta App Dashboard → your app → WhatsApp → API Setup**, or check the URL when viewing the WhatsApp product (`.../whatsapp-business/overview/?business_id=<BUSINESS_ID>`) and query `GET /<BUSINESS_ID>/owned_whatsapp_business_accounts` with an access token that has `whatsapp_business_management` scope.
+
 ## Known limitations
 
 - Resolving a free-text reply with no explicit reply-to (i.e. not a swipe-reply) falls back to the single most-recently-sent pending prompt. If two `prompt` sends are outstanding at the same time and the user doesn't swipe-reply to a specific message, the gateway can't disambiguate which one the reply is for.
