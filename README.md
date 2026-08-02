@@ -19,6 +19,8 @@ Built for one person's own WhatsApp number acting as a personal notification/app
    - Separately, subscribe your WhatsApp Business Account (WABA) to send its events through this app — see [Troubleshooting](#troubleshooting) below, this step is easy to miss and nothing will tell you it's missing.
 6. Redeploy (`vercel --prod`) after setting env vars so the running functions actually pick them up.
 
+> Building an LLM/AI agent integration? See [`llms/whatsapp-gateway.md`](./llms/whatsapp-gateway.md) for a self-contained agent-oriented guide.
+
 ## Using it from your code
 
 Every consumer talks to the gateway the same way, whatever language it's written in: `POST /api/send` to send something, then either register a `callbackUrl` or poll `GET /api/replies/:correlationId` to get the reply back.
