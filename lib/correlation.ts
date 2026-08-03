@@ -80,12 +80,29 @@ function resolveFromButton(
   return { correlationId, decision };
 }
 
+function resolveFromListReply(
+  listReplyId: string
+): { correlationId: string; selectedIndex: number } | null {
+  const separatorIndex = listReplyId.lastIndexOf(":");
+  if (separatorIndex === -1) return null;
+  const correlationId = listReplyId.slice(0, separatorIndex);
+  const indexPart = listReplyId.slice(separatorIndex + 1);
+  if (!correlationId || !/^\d+$/.test(indexPart)) return null;
+  return { correlationId, selectedIndex: Number(indexPart) };
+}
+
 export async function resolveCorrelationId(input: {
   buttonId?: string;
   contextMessageId?: string;
-}): Promise<{ correlationId: string; decision?: "approve" | "deny" } | null> {
+  listReplyId?: string;
+}): Promise<
+  { correlationId: string; decision?: "approve" | "deny"; selectedIndex?: number } | null
+> {
   if (input.buttonId) {
     return resolveFromButton(input.buttonId);
+  }
+  if (input.listReplyId) {
+    return resolveFromListReply(input.listReplyId);
   }
   if (input.contextMessageId) {
     const correlationId = await redis.get<string>(msgIdKey(input.contextMessageId));

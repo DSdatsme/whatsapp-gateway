@@ -64,6 +64,26 @@ describe("resolveCorrelationId", () => {
     expect(resolved).toEqual({ correlationId: "job:123", decision: "approve" });
   });
 
+  it("resolves from a list reply id", async () => {
+    const resolved = await resolveCorrelationId({ listReplyId: "abc123:1" });
+    expect(resolved).toEqual({ correlationId: "abc123", selectedIndex: 1 });
+  });
+
+  it("resolves from a list reply id whose correlationId itself contains a colon", async () => {
+    const resolved = await resolveCorrelationId({ listReplyId: "job:42:2" });
+    expect(resolved).toEqual({ correlationId: "job:42", selectedIndex: 2 });
+  });
+
+  it("returns null for a malformed list reply id (non-numeric index)", async () => {
+    const resolved = await resolveCorrelationId({ listReplyId: "abc123:notanumber" });
+    expect(resolved).toBeNull();
+  });
+
+  it("returns null for a list reply id with no colon", async () => {
+    const resolved = await resolveCorrelationId({ listReplyId: "abc123" });
+    expect(resolved).toBeNull();
+  });
+
   it("resolves from context.id via the message-id index", async () => {
     await createPendingRecord("abc123", {
       type: "prompt",

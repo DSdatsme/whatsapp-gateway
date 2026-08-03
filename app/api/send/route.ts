@@ -6,6 +6,7 @@ import { getRequiredEnv } from "@/lib/env";
 import {
   buildApprovalPayload,
   buildNotificationPayload,
+  buildSelectPayload,
   sendWhatsAppMessage,
   WhatsAppSendError,
 } from "@/lib/whatsapp";
@@ -13,11 +14,12 @@ import {
 export const runtime = "nodejs";
 
 interface SendRequestBody {
-  type: "notification" | "approval" | "prompt";
+  type: "notification" | "approval" | "prompt" | "select";
   text: string;
   correlationId?: string;
   approveLabel?: string;
   denyLabel?: string;
+  options?: string[];
   callbackUrl?: string;
 }
 
@@ -35,9 +37,15 @@ export async function POST(request: Request): Promise<Response> {
   if (!body.type || !body.text) {
     return NextResponse.json({ error: "type and text are required" }, { status: 400 });
   }
-  if (!["notification", "approval", "prompt"].includes(body.type)) {
+  if (!["notification", "approval", "prompt", "select"].includes(body.type)) {
     return NextResponse.json(
-      { error: "type must be one of: notification, approval, prompt" },
+      { error: "type must be one of: notification, approval, prompt, select" },
+      { status: 400 }
+    );
+  }
+  if (body.type === "select" && (!Array.isArray(body.options) || body.options.length < 2 || body.options.length > 10)) {
+    return NextResponse.json(
+      { error: "options must be an array of 2-10 strings for type select" },
       { status: 400 }
     );
   }
@@ -54,7 +62,9 @@ export async function POST(request: Request): Promise<Response> {
           body.approveLabel ?? "Approve",
           body.denyLabel ?? "Deny"
         )
-      : buildNotificationPayload(recipient, body.text);
+      : body.type === "select"
+        ? buildSelectPayload(recipient, body.text, correlationId, body.options!)
+        : buildNotificationPayload(recipient, body.text);
 
   try {
     const { messageId } = await sendWhatsAppMessage(payload);
@@ -63,6 +73,7 @@ export async function POST(request: Request): Promise<Response> {
       callbackUrl: body.callbackUrl,
       whatsappMessageId: messageId,
       createdAt: Date.now(),
+      ...(body.type === "select" ? { options: body.options } : {}),
     });
     return NextResponse.json({ correlationId }, { status: 200 });
   } catch (err) {

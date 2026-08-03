@@ -7,6 +7,12 @@ vi.mock("@/lib/whatsapp", () => ({
     text,
     correlationId,
   })),
+  buildSelectPayload: vi.fn((to: string, text: string, correlationId: string, options: string[]) => ({
+    to,
+    text,
+    correlationId,
+    options,
+  })),
   sendWhatsAppMessage: vi.fn(async () => ({ messageId: "wamid.1" })),
   WhatsAppSendError: class WhatsAppSendError extends Error {},
 }));
@@ -79,5 +85,34 @@ describe("POST /api/send", () => {
     vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new WhatsAppSendError("boom"));
     const res = await POST(request({ type: "notification", text: "hi" }));
     expect(res.status).toBe(502);
+  });
+
+  it("rejects a select request with fewer than 2 options", async () => {
+    const res = await POST(request({ type: "select", text: "pick one", options: ["Only one"] }));
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error?: string };
+    expect(data.error).toMatch(/2-10/);
+  });
+
+  it("rejects a select request with more than 10 options", async () => {
+    const options = Array.from({ length: 11 }, (_, i) => `Option ${i}`);
+    const res = await POST(request({ type: "select", text: "pick one", options }));
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a select request with a non-array options field", async () => {
+    const res = await POST(request({ type: "select", text: "pick one", options: "not-an-array" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("sends a select message and stores its options on the pending record", async () => {
+    const options = ["Red", "Green", "Blue"];
+    const res = await POST(request({ type: "select", text: "pick one", options }));
+    const data = (await res.json()) as { correlationId?: string };
+    expect(res.status).toBe(200);
+    expect(createPendingRecord).toHaveBeenCalledWith(
+      data.correlationId,
+      expect.objectContaining({ type: "select", options })
+    );
   });
 });

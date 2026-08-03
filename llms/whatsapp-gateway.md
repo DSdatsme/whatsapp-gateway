@@ -4,11 +4,12 @@ This file is written for an LLM/AI agent that needs to notify a human, ask for a
 
 ## What this is
 
-A hosted HTTP gateway in front of one WhatsApp Business phone number. You call it over plain HTTP; it handles the WhatsApp Cloud API details. Three operations:
+A hosted HTTP gateway in front of one WhatsApp Business phone number. You call it over plain HTTP; it handles the WhatsApp Cloud API details. Four operations:
 
 - **notification** — push a message, no reply expected.
 - **approval** — push a yes/no question with buttons, get back `true`/`false`.
 - **prompt** — push an open-ended question, get back free text.
+- **select** — push a question with 2-10 labeled options, get back the exact label the human picked.
 
 Every send returns a `correlationId` immediately (it does not wait for a reply). To get the reply, poll `GET /api/replies/:correlationId` until its status flips to `replied`.
 
@@ -66,6 +67,24 @@ Poll for the result the same way. The reply `value` is whatever free text the hu
 
 **Important:** only one `prompt` should be outstanding at a time. If a second `prompt` is sent before the first is answered, and the human replies without explicitly swipe-replying to a specific message, the gateway cannot tell which question the reply is answering — it resolves to whichever `prompt` was sent most recently. Send one, wait for its reply, then send the next.
 
+## Operation 4: select (pick one of several options)
+
+```bash
+curl -X POST "$GATEWAY_BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "select",
+    "text": "Which environment?",
+    "options": ["staging", "production"],
+    "correlationId": "env-pick-1"
+  }'
+```
+
+- `options` is required for this type: an array of 2-10 plain-text labels. Anything outside that range gets a 400.
+- Poll for the result the same way as the others. The reply `value` is the exact label string the human picked (e.g. `"production"`), not an index.
+- Not wrapped by the Node client library yet (`createClient(...)` has no `sendSelect` method) — call `/api/send` directly for this one even from a Node agent.
+
 ## Polling for a reply
 
 ```bash
@@ -75,7 +94,7 @@ curl "$GATEWAY_BASE_URL/api/replies/deploy-42" \
 
 Responses:
 - `{"status": "pending"}` — no reply yet. Wait and retry (5-10 second intervals are reasonable; a human needs time to see a phone notification and respond — don't poll faster than every couple of seconds, and be prepared to wait several minutes, not seconds).
-- `{"status": "replied", "value": "approve", "receivedAt": <epoch-ms>}` — done. `value` is `"approve"`/`"deny"` for approvals, free text for prompts.
+- `{"status": "replied", "value": "approve", "receivedAt": <epoch-ms>}` — done. `value` is `"approve"`/`"deny"` for approvals, free text for prompts, or the picked option's label for `select`.
 - `404 {"error": "not found"}` — unknown `correlationId`, or its record expired (pending records have a 24h TTL).
 
 ## Recipe: block on human approval before taking an action

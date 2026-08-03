@@ -1,6 +1,6 @@
 # WhatsApp Gateway
 
-A small hosted service that owns one WhatsApp Business Cloud API phone number and exposes it over a plain HTTP API — send a notification, ask a yes/no approval question, or ask an open-ended question, and get the reply back — so none of your other apps or scripts have to talk to Meta's Graph API directly.
+A small hosted service that owns one WhatsApp Business Cloud API phone number and exposes it over a plain HTTP API — send a notification, ask a yes/no approval question, ask an open-ended question, or ask the recipient to pick from a list of options, and get the reply back — so none of your other apps or scripts have to talk to Meta's Graph API directly.
 
 Built for one person's own WhatsApp number acting as a personal notification/approval channel for multiple independent apps and scripts: every consumer sends through this one gateway, and every reply gets routed back to whichever consumer asked the question.
 
@@ -54,6 +54,8 @@ if (approved) {
 const releaseName = await gateway.sendPrompt("What should I name this release?");
 ```
 
+`select` (pick one of several options) isn't wrapped by the client library yet — call the HTTP endpoint directly (see below) even from a Node project.
+
 ### Any other language (raw HTTP)
 
 There's no client library for non-Node consumers yet — just call the HTTP API directly. Python example using `requests`:
@@ -90,13 +92,22 @@ while True:
         break
 ```
 
+`select` works the same way, with an `options` array instead of yes/no buttons — the reply's `value` is the exact option label the recipient picked:
+
+```bash
+curl -X POST "$BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "select", "text": "Which environment?", "options": ["staging", "production"], "correlationId": "env-pick-1"}'
+```
+
 The same shape works from a shell script with `curl`, a cron job, a CI pipeline — anything that can make an HTTP request.
 
 ## API Reference
 
 ### Endpoints
 
-- `POST /api/send` — send a `notification`, `approval`, or `prompt` message.
+- `POST /api/send` — send a `notification`, `approval`, `prompt`, or `select` message.
 - `GET|POST /api/webhook` — Meta's webhook verification handshake and inbound message/reply receiver (Meta calls this, you don't).
 - `GET /api/replies/:correlationId` — poll for the reply to a previously sent message.
 
@@ -104,11 +115,12 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 
 | Field | Required | Notes |
 |---|---|---|
-| `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`. |
+| `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`, `"select"`. |
 | `text` | yes | The message body sent to the recipient. |
 | `correlationId` | no | Caller-supplied id used to correlate replies. Auto-generated (a UUID) if omitted. |
 | `approveLabel` | no | Button label for `approval` messages (defaults to `"Approve"`). |
 | `denyLabel` | no | Button label for `approval` messages (defaults to `"Deny"`). |
+| `options` | `select` only | Array of 2-10 plain-text option labels. The reply's `value` is the exact label the recipient picked. |
 | `callbackUrl` | no | If set, the reply is POSTed to this URL instead of (or in addition to) being available via `GET /api/replies/:correlationId`. |
 
 Response is `{ "correlationId": "..." }` on success (200), or `{ "error": "..." }` on failure (400 for invalid input, 502 if the Graph API call fails).
@@ -142,7 +154,7 @@ npm test
 Graph API returns `200` with a real message ID as soon as it *accepts* a message — that does not mean it was actually delivered. Two common reasons a message silently never arrives, neither of which is a bug in this gateway:
 
 1. **Using a test/sandbox WhatsApp number.** The free test number Meta provisions in **WhatsApp → API Setup** can only message phone numbers explicitly added and OTP-verified as test recipients. Add the recipient there (**API Setup → "To" field → Manage phone number list**) before expecting any delivery.
-2. **The 24-hour customer service window is closed.** WhatsApp only allows free-form messages (which is everything this gateway sends — `notification`, `approval`, and `prompt` are all free-form, not templates) to a recipient who has messaged the business number within the last 24 hours. If the recipient hasn't messaged first (or it's been >24h since they last did), Graph API still returns 200, but the message is dropped. Have the recipient send any message to the business number to open the window, then retry. A pre-approved **template** message is the only message type exempt from this rule — useful for confirming your token/phone ID/recipient setup is otherwise correct without needing an open session.
+2. **The 24-hour customer service window is closed.** WhatsApp only allows free-form messages (which is everything this gateway sends — `notification`, `approval`, `prompt`, and `select` are all free-form, not templates) to a recipient who has messaged the business number within the last 24 hours. If the recipient hasn't messaged first (or it's been >24h since they last did), Graph API still returns 200, but the message is dropped. Have the recipient send any message to the business number to open the window, then retry. A pre-approved **template** message is the only message type exempt from this rule — useful for confirming your token/phone ID/recipient setup is otherwise correct without needing an open session.
 
 ### Sends arrive but replies never reach `/api/webhook`
 
@@ -167,6 +179,7 @@ To find your WABA ID: open **Meta App Dashboard → your app → WhatsApp → AP
 - Resolving a free-text reply with no explicit reply-to (i.e. not a swipe-reply) falls back to the single most-recently-sent pending prompt. If two `prompt` sends are outstanding at the same time and the user doesn't swipe-reply to a specific message, the gateway can't disambiguate which one the reply is for.
 - Swipe-replying to a `notification` or `approval` message (rather than a `prompt`) isn't correlated via `context.id`, since only `prompt`-type sends are indexed by WhatsApp message id.
 - The client library is Node-only; other languages use the raw HTTP API directly (see [Using it from your code](#using-it-from-your-code)).
+- `select` supports 2-10 options in a single flat list (no sections/descriptions, and no `sendSelect` helper in the client library yet) — call `/api/send` directly for it.
 
 ## License
 

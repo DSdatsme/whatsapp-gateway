@@ -1,4 +1,4 @@
-export type PendingType = "notification" | "approval" | "prompt";
+export type PendingType = "notification" | "approval" | "prompt" | "select";
 
 export interface PendingRecord {
   status: "pending" | "replied";
@@ -8,4 +8,5 @@ export interface PendingRecord {
   createdAt: number;
   value?: string;
   receivedAt?: number;
+  options?: string[];
 }

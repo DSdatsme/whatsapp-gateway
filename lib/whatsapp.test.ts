@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildApprovalPayload,
   buildNotificationPayload,
+  buildSelectPayload,
   sendWhatsAppMessage,
   WhatsAppSendError,
 } from "@/lib/whatsapp";
@@ -56,5 +57,26 @@ describe("buildApprovalPayload", () => {
     const buttons = payload.interactive.action.buttons;
     expect(buttons[0]).toEqual({ type: "reply", reply: { id: "approve:corr-1", title: "Approve" } });
     expect(buttons[1]).toEqual({ type: "reply", reply: { id: "deny:corr-1", title: "Deny" } });
+  });
+});
+
+describe("buildSelectPayload", () => {
+  it("builds one list row per option, id-encoded as correlationId:index", () => {
+    const payload = buildSelectPayload("1234567890", "pick one", "corr-1", ["Red", "Green", "Blue"]) as any;
+    const rows = payload.interactive.action.sections[0].rows;
+    expect(rows).toEqual([
+      { id: "corr-1:0", title: "Red" },
+      { id: "corr-1:1", title: "Green" },
+      { id: "corr-1:2", title: "Blue" },
+    ]);
+    expect(payload.interactive.type).toBe("list");
+    expect(payload.interactive.body.text).toBe("pick one");
+  });
+
+  it("keeps the correlation id intact even when it contains a colon", () => {
+    const payload = buildSelectPayload("1234567890", "pick one", "job:42", ["A", "B"]) as any;
+    const rows = payload.interactive.action.sections[0].rows;
+    expect(rows[0].id).toBe("job:42:0");
+    expect(rows[1].id).toBe("job:42:1");
   });
 });

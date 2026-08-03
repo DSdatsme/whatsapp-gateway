@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/correlation", () => ({
   resolveCorrelationId: vi.fn(),
   markReplied: vi.fn(),
+  getPendingRecord: vi.fn(),
 }));
 vi.mock("@/lib/callback", () => ({
   deliverCallback: vi.fn(async () => {}),
 }));
 
 import { GET, POST } from "@/app/api/webhook/route";
-import { resolveCorrelationId, markReplied } from "@/lib/correlation";
+import { resolveCorrelationId, markReplied, getPendingRecord } from "@/lib/correlation";
 import { deliverCallback } from "@/lib/callback";
 
 const APP_SECRET = "test-app-secret";
@@ -100,5 +101,43 @@ describe("POST /api/webhook", () => {
     const res = await POST(signedRequest(BUTTON_REPLY_PAYLOAD));
     expect(res.status).toBe(200);
     expect(markReplied).not.toHaveBeenCalled();
+  });
+
+  it("resolves a list reply to the selected option's label", async () => {
+    const LIST_REPLY_PAYLOAD = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [{ interactive: { list_reply: { id: "corr-2:1", title: "Green" } } }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "corr-2", selectedIndex: 1 });
+    vi.mocked(getPendingRecord).mockResolvedValue({
+      status: "pending",
+      type: "select",
+      whatsappMessageId: "wamid.2",
+      createdAt: 1,
+      options: ["Red", "Green", "Blue"],
+    });
+    vi.mocked(markReplied).mockResolvedValue({
+      status: "replied",
+      type: "select",
+      whatsappMessageId: "wamid.2",
+      createdAt: 1,
+      value: "Green",
+      receivedAt: 2,
+      options: ["Red", "Green", "Blue"],
+    });
+
+    const res = await POST(signedRequest(LIST_REPLY_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(markReplied).toHaveBeenCalledWith("corr-2", "Green");
   });
 });

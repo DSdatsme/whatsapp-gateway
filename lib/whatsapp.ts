@@ -53,6 +53,31 @@ export function buildNotificationPayload(to: string, text: string): Record<strin
   };
 }
 
+export function buildSelectPayload(
+  to: string,
+  text: string,
+  correlationId: string,
+  options: string[]
+): Record<string, unknown> {
+  return {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text },
+      action: {
+        button: "Select",
+        sections: [
+          {
+            rows: options.map((title, index) => ({ id: `${correlationId}:${index}`, title })),
+          },
+        ],
+      },
+    },
+  };
+}
+
 export function buildApprovalPayload(
   to: string,
   text: string,

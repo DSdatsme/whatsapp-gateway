@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getRequiredEnv } from "@/lib/env";
 import { verifySignature } from "@/lib/signature";
-import { resolveCorrelationId, markReplied } from "@/lib/correlation";
+import { resolveCorrelationId, markReplied, getPendingRecord } from "@/lib/correlation";
 import { deliverCallback } from "@/lib/callback";
 
 export const runtime = "nodejs";
@@ -37,16 +37,24 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const buttonId: string | undefined = message.interactive?.button_reply?.id;
+  const listReplyId: string | undefined = message.interactive?.list_reply?.id;
   const contextMessageId: string | undefined = message.context?.id;
   const replyText: string = message.interactive?.button_reply?.title ?? message.text?.body ?? "";
 
-  const resolved = await resolveCorrelationId({ buttonId, contextMessageId });
+  const resolved = await resolveCorrelationId({ buttonId, listReplyId, contextMessageId });
   if (!resolved) {
     console.log("Webhook ack without action - no matching pending reply");
     return NextResponse.json({ ok: true });
   }
 
-  const value = resolved.decision ?? replyText;
+  let value: string;
+  if (resolved.selectedIndex !== undefined) {
+    const pending = await getPendingRecord(resolved.correlationId);
+    value = pending?.options?.[resolved.selectedIndex] ?? "";
+  } else {
+    value = resolved.decision ?? replyText;
+  }
+
   const updated = await markReplied(resolved.correlationId, value);
   if (!updated) {
     console.log("Webhook ack without action - no matching pending reply");
