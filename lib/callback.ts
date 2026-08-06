@@ -3,7 +3,8 @@ export async function deliverCallback(
   payload: { correlationId: string; value: string },
   attempts = 2
 ): Promise<void> {
-  for (let i = 0; i < attempts; i++) {
+  const effectiveAttempts = Math.max(1, Math.floor(attempts));
+  for (let i = 0; i < effectiveAttempts; i++) {
     try {
       const res = await fetch(callbackUrl, {
         method: "POST",
@@ -18,7 +19,7 @@ export async function deliverCallback(
   // Best-effort only: the reply is already durably stored and recoverable via polling.
   try {
     console.warn(
-      `Failed to deliver callback after ${attempts} attempts`,
+      `Failed to deliver callback after ${effectiveAttempts} attempts`,
       { callbackUrl, correlationId: payload.correlationId }
     );
   } catch {

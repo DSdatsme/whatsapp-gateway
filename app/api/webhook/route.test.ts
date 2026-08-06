@@ -103,6 +103,16 @@ describe("POST /api/webhook", () => {
     expect(markReplied).not.toHaveBeenCalled();
   });
 
+  it("acks without delivering a callback when markReplied returns null (duplicate/already-replied delivery)", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "corr-1", decision: "approve" });
+    vi.mocked(markReplied).mockResolvedValue(null);
+
+    const res = await POST(signedRequest(BUTTON_REPLY_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(markReplied).toHaveBeenCalledWith("corr-1", "approve");
+    expect(deliverCallback).not.toHaveBeenCalled();
+  });
+
   it("resolves a list reply to the selected option's label", async () => {
     const LIST_REPLY_PAYLOAD = {
       entry: [

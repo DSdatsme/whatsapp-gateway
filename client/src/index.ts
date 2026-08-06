@@ -10,7 +10,12 @@ export interface SendOptions {
   timeoutMs?: number;
 }
 
-export class GatewayError extends Error {}
+export class GatewayError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GatewayError";
+  }
+}
 
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -93,5 +98,25 @@ export function createClient(options: GatewayClientOptions) {
     );
   }
 
-  return { sendNotification, sendApproval, sendPrompt };
+  async function sendSelect(text: string, selectOptions: string[], opts: SendOptions = {}): Promise<string> {
+    if (opts.callbackUrl) {
+      throw new GatewayError(
+        "sendSelect polls for its result and can't also be given a callbackUrl - " +
+          "register your own route and call the raw send API if you want callback delivery"
+      );
+    }
+    const { correlationId } = await send({
+      type: "select",
+      text,
+      options: selectOptions,
+      correlationId: opts.correlationId,
+    });
+    return pollReply(
+      correlationId,
+      opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    );
+  }
+
+  return { sendNotification, sendApproval, sendPrompt, sendSelect };
 }

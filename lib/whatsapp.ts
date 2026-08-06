@@ -2,7 +2,12 @@ import { getRequiredEnv } from "@/lib/env";
 
 const GRAPH_API_VERSION = "v21.0";
 
-export class WhatsAppSendError extends Error {}
+export class WhatsAppSendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WhatsAppSendError";
+  }
+}
 
 interface GraphApiResponse {
   messages?: { id: string }[];

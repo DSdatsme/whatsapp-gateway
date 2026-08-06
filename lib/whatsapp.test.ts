@@ -49,6 +49,11 @@ describe("sendWhatsAppMessage", () => {
       sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"))
     ).rejects.toThrow(WhatsAppSendError);
   });
+
+  it("sets error.name to WhatsAppSendError, not the generic Error", () => {
+    const error = new WhatsAppSendError("boom");
+    expect(error.name).toBe("WhatsAppSendError");
+  });
 });
 
 describe("buildApprovalPayload", () => {

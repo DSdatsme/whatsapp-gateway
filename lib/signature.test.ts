@@ -27,4 +27,9 @@ describe("verifySignature", () => {
   it("rejects a malformed signature header", () => {
     expect(verifySignature("{}", "not-a-signature", SECRET)).toBe(false);
   });
+
+  it("rejects a well-formed but wrong-length signature without throwing", () => {
+    expect(() => verifySignature("{}", "sha256=abcd", SECRET)).not.toThrow();
+    expect(verifySignature("{}", "sha256=abcd", SECRET)).toBe(false);
+  });
 });

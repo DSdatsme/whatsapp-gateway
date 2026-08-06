@@ -81,10 +81,11 @@ describe("POST /api/send", () => {
     );
   });
 
-  it("returns 502 when the Graph API call fails", async () => {
+  it("returns 502 when the Graph API call fails, and never creates a pending record", async () => {
     vi.mocked(sendWhatsAppMessage).mockRejectedValueOnce(new WhatsAppSendError("boom"));
     const res = await POST(request({ type: "notification", text: "hi" }));
     expect(res.status).toBe(502);
+    expect(createPendingRecord).not.toHaveBeenCalled();
   });
 
   it("rejects a select request with fewer than 2 options", async () => {

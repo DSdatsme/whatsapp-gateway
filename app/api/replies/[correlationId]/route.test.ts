@@ -22,10 +22,11 @@ function makeRequest(correlationId: string, apiKey = "test-key") {
 }
 
 describe("GET /api/replies/:correlationId", () => {
-  it("rejects an unauthenticated request", async () => {
+  it("rejects an unauthenticated request without looking up the record", async () => {
     const { req, params } = makeRequest("corr-1", "wrong-key");
     const res = await GET(req, { params });
     expect(res.status).toBe(401);
+    expect(getPendingRecord).not.toHaveBeenCalled();
   });
 
   it("returns 404 when there is no such record", async () => {

@@ -46,4 +46,12 @@ describe("deliverCallback", () => {
       { callbackUrl: "https://consumer.example/hook", correlationId: "c1" }
     );
   });
+
+  it("clamps a non-positive attempts value up to 1 instead of never trying", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await deliverCallback("https://consumer.example/hook", { correlationId: "c1", value: "approve" }, 0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
