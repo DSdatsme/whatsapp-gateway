@@ -83,7 +83,7 @@ curl -X POST "$GATEWAY_BASE_URL/api/send" \
 
 - `options` is required for this type: an array of 2-10 plain-text labels. Anything outside that range gets a 400.
 - Poll for the result the same way as the others. The reply `value` is the exact label string the human picked (e.g. `"production"`), not an index.
-- Not wrapped by the Node client library yet (`createClient(...)` has no `sendSelect` method) — call `/api/send` directly for this one even from a Node agent.
+- The Node client library wraps this as `gateway.sendSelect(text, options)` — see below.
 
 ## Polling for a reply
 
@@ -130,7 +130,11 @@ Node/TypeScript agents in a project that can install a local package can use the
 import { createClient } from "whatsapp-gateway-client";
 const gateway = createClient({ baseUrl: process.env.GATEWAY_BASE_URL!, apiKey: process.env.GATEWAY_API_KEY! });
 const approved = await gateway.sendApproval("Proceed with deploy?");
+const releaseName = await gateway.sendPrompt("What should I name this release?");
+const environment = await gateway.sendSelect("Which environment?", ["staging", "production"]);
 ```
+
+`sendApproval`/`sendPrompt`/`sendSelect` each accept an optional `{ correlationId, pollIntervalMs, timeoutMs }` object as a last argument to override the id or the poll timing (defaults: poll every 5s, give up after 10 minutes and throw `GatewayError`).
 
 ## Things that will trip you up if you don't know about them
 

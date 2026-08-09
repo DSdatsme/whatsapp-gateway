@@ -4,6 +4,31 @@ A small hosted service that owns one WhatsApp Business Cloud API phone number an
 
 Built for one person's own WhatsApp number acting as a personal notification/approval channel for multiple independent apps and scripts: every consumer sends through this one gateway, and every reply gets routed back to whichever consumer asked the question.
 
+**Contents:**
+- [Message types at a glance](#message-types-at-a-glance)
+- [Quickstart: deploying your own gateway](#quickstart-deploying-your-own-gateway)
+- [Using it from your code](#using-it-from-your-code)
+  - [Node / TypeScript (client library)](#node--typescript-client-library)
+  - [Any other language (raw HTTP)](#any-other-language-raw-http)
+- [API Reference](#api-reference)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Known limitations](#known-limitations)
+- [License](#license)
+
+## Message types at a glance
+
+Every message sent through the gateway is one of these four types. Pick the row that matches what you need, then jump to [Using it from your code](#using-it-from-your-code).
+
+| Type | Use for | What the recipient sees | Reply `value` |
+|---|---|---|---|
+| `notification` | A fire-and-forget heads-up | Plain text, no buttons | — (no reply is tracked) |
+| `approval` | A yes/no decision | Text with **Approve**/**Deny** buttons (labels customizable) | `"approve"` or `"deny"` |
+| `prompt` | An open-ended question | Plain text; recipient replies with their own message | the free-text reply |
+| `select` | A multiple-choice question (2-10 options) | An interactive list picker | the exact option label picked |
+
+> Building an LLM/AI agent integration? See [`llms/whatsapp-gateway.md`](./llms/whatsapp-gateway.md) for a self-contained agent-oriented guide.
+
 ## Quickstart: deploying your own gateway
 
 1. **Get WhatsApp Cloud API credentials** from the [Meta App Dashboard](https://developers.facebook.com/apps/): create/open an app with the WhatsApp product added, then grab the access token and phone number ID from **WhatsApp → API Setup**.
@@ -19,15 +44,13 @@ Built for one person's own WhatsApp number acting as a personal notification/app
    - Separately, subscribe your WhatsApp Business Account (WABA) to send its events through this app — see [Troubleshooting](#troubleshooting) below, this step is easy to miss and nothing will tell you it's missing.
 6. Redeploy (`vercel --prod`) after setting env vars so the running functions actually pick them up.
 
-> Building an LLM/AI agent integration? See [`llms/whatsapp-gateway.md`](./llms/whatsapp-gateway.md) for a self-contained agent-oriented guide.
-
 ## Using it from your code
 
 Every consumer talks to the gateway the same way, whatever language it's written in: `POST /api/send` to send something, then either register a `callbackUrl` or poll `GET /api/replies/:correlationId` to get the reply back.
 
 ### Node / TypeScript (client library)
 
-`client/` is a small standalone package (`whatsapp-gateway-client`) that wraps the HTTP API. It isn't published to a registry — reference it locally from another project:
+`client/` is a small standalone package (`whatsapp-gateway-client`) that wraps the HTTP API, including polling, so you never hand-roll a poll loop yourself. It isn't published to a registry — reference it locally from another project:
 
 ```bash
 npm install <path-to-this-repo>/client
@@ -52,13 +75,39 @@ if (approved) {
 
 // Ask an open-ended question; polls until a free-text reply arrives
 const releaseName = await gateway.sendPrompt("What should I name this release?");
+
+// Ask the recipient to pick one of several options; resolves to the exact label picked
+const environment = await gateway.sendSelect("Which environment?", ["staging", "production"]);
 ```
 
-`select` (pick one of several options) isn't wrapped by the client library yet — call the HTTP endpoint directly (see below) even from a Node project.
+`sendApproval`, `sendPrompt`, and `sendSelect` all accept an optional options object as their last argument:
+
+| Option | Default | Notes |
+|---|---|---|
+| `correlationId` | auto-generated UUID | Supply your own (e.g. a job id) for a predictable, human-meaningful id. |
+| `pollIntervalMs` | `5000` | How often to check for a reply. |
+| `timeoutMs` | `600000` (10 minutes) | How long to poll before giving up and throwing. |
+| `callbackUrl` | — | Mutually exclusive with polling on these three methods — throws immediately if set. Register your own route and call `/api/send` directly (see [API Reference](#api-reference)) if you want callback delivery instead. |
+
+A poll that times out, or a send the gateway rejects, throws `GatewayError`:
+
+```ts
+import { GatewayError } from "whatsapp-gateway-client";
+
+try {
+  const approved = await gateway.sendApproval("Deploy now?", { timeoutMs: 60_000 });
+} catch (err) {
+  if (err instanceof GatewayError) {
+    // no reply within 60s, or the gateway rejected the request (bad auth, bad input, etc.)
+  }
+}
+```
 
 ### Any other language (raw HTTP)
 
-There's no client library for non-Node consumers yet — just call the HTTP API directly. Python example using `requests`:
+There's no client library for non-Node consumers yet — call the HTTP API directly. The pattern is identical for every message type: `POST /api/send`, then poll `GET /api/replies/:correlationId` until `status` flips to `"replied"`.
+
+Full example in Python using `requests` (an `approval` send, polled to completion):
 
 ```python
 import os
@@ -92,12 +141,22 @@ while True:
         break
 ```
 
-`select` works the same way, with an `options` array instead of yes/no buttons — the reply's `value` is the exact option label the recipient picked:
+The other types only differ in the `POST /api/send` body — poll the same way afterward (skip polling for `notification`, since no reply is tracked):
 
 ```bash
+# notification — fire-and-forget
 curl -X POST "$BASE_URL/api/send" \
-  -H "Authorization: Bearer $GATEWAY_API_KEY" \
-  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" -H "Content-Type: application/json" \
+  -d '{"type": "notification", "text": "Nightly backup finished."}'
+
+# prompt — open-ended question; reply value is whatever free text comes back
+curl -X POST "$BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" -H "Content-Type: application/json" \
+  -d '{"type": "prompt", "text": "What should I name this release?", "correlationId": "release-name-1"}'
+
+# select — multiple choice; reply value is the exact option label picked
+curl -X POST "$BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" -H "Content-Type: application/json" \
   -d '{"type": "select", "text": "Which environment?", "options": ["staging", "production"], "correlationId": "env-pick-1"}'
 ```
 
@@ -124,6 +183,14 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 | `callbackUrl` | no | If set, the reply is POSTed to this URL instead of (or in addition to) being available via `GET /api/replies/:correlationId`. |
 
 Response is `{ "correlationId": "..." }` on success (200), or `{ "error": "..." }` on failure (400 for invalid input, 502 if the Graph API call fails).
+
+### `GET /api/replies/:correlationId` response shape
+
+| Status | Response |
+|---|---|
+| Still waiting | `{ "status": "pending" }` |
+| Answered | `{ "status": "replied", "value": "...", "receivedAt": <epoch-ms> }` — `value` is `"approve"`/`"deny"` for `approval`, free text for `prompt`, or the picked label for `select`. |
+| Unknown or expired id | `404 { "error": "not found" }` (pending records have a 24h TTL) |
 
 ### Environment variables
 
@@ -179,7 +246,7 @@ To find your WABA ID: open **Meta App Dashboard → your app → WhatsApp → AP
 - Resolving a free-text reply with no explicit reply-to (i.e. not a swipe-reply) falls back to the single most-recently-sent pending prompt. If two `prompt` sends are outstanding at the same time and the user doesn't swipe-reply to a specific message, the gateway can't disambiguate which one the reply is for.
 - Swipe-replying to a `notification` or `approval` message (rather than a `prompt`) isn't correlated via `context.id`, since only `prompt`-type sends are indexed by WhatsApp message id.
 - The client library is Node-only; other languages use the raw HTTP API directly (see [Using it from your code](#using-it-from-your-code)).
-- `select` supports 2-10 options in a single flat list (no sections/descriptions, and no `sendSelect` helper in the client library yet) — call `/api/send` directly for it.
+- `select` supports 2-10 options in a single flat list (no sections or per-option descriptions) — call `/api/send` directly if you need richer list formatting than a flat array of labels.
 
 ## License
 
