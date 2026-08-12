@@ -1,4 +1,5 @@
 import { redis } from "@/lib/redis";
+import { getRequiredEnv } from "@/lib/env";
 import type { PendingRecord } from "@/lib/types";
 
 const PENDING_TTL_SECONDS = 60 * 60 * 24;
@@ -92,12 +93,19 @@ function resolveFromListReply(
 }
 
 export async function resolveCorrelationId(input: {
+  from: string;
   buttonId?: string;
   contextMessageId?: string;
   listReplyId?: string;
 }): Promise<
   { correlationId: string; decision?: "approve" | "deny"; selectedIndex?: number } | null
 > {
+  // Meta's HMAC signature only proves the webhook call came from Meta's relay,
+  // not that the underlying WhatsApp message came from the intended recipient.
+  // Anyone can text the business number, so replies must be sender-checked here.
+  if (input.from !== getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER")) {
+    return null;
+  }
   if (input.buttonId) {
     return resolveFromButton(input.buttonId);
   }

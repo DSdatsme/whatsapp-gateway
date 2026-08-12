@@ -36,12 +36,13 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ ok: true });
   }
 
+  const from: string = message.from ?? "";
   const buttonId: string | undefined = message.interactive?.button_reply?.id;
   const listReplyId: string | undefined = message.interactive?.list_reply?.id;
   const contextMessageId: string | undefined = message.context?.id;
   const replyText: string = message.interactive?.button_reply?.title ?? message.text?.body ?? "";
 
-  const resolved = await resolveCorrelationId({ buttonId, listReplyId, contextMessageId });
+  const resolved = await resolveCorrelationId({ from, buttonId, listReplyId, contextMessageId });
   if (!resolved) {
     console.log("Webhook ack without action - no matching pending reply");
     return NextResponse.json({ ok: true });

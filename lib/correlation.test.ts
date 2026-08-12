@@ -48,39 +48,42 @@ import {
   resolveCorrelationId,
 } from "@/lib/correlation";
 
+const RECIPIENT = "15551234567";
+
 beforeEach(() => {
   store.clear();
   zsets.clear();
+  process.env.WHATSAPP_RECIPIENT_NUMBER = RECIPIENT;
 });
 
 describe("resolveCorrelationId", () => {
   it("resolves from a button id", async () => {
-    const resolved = await resolveCorrelationId({ buttonId: "approve:abc123" });
+    const resolved = await resolveCorrelationId({ from: RECIPIENT, buttonId: "approve:abc123" });
     expect(resolved).toEqual({ correlationId: "abc123", decision: "approve" });
   });
 
   it("resolves from a button id whose correlationId itself contains a colon", async () => {
-    const resolved = await resolveCorrelationId({ buttonId: "approve:job:123" });
+    const resolved = await resolveCorrelationId({ from: RECIPIENT, buttonId: "approve:job:123" });
     expect(resolved).toEqual({ correlationId: "job:123", decision: "approve" });
   });
 
   it("resolves from a list reply id", async () => {
-    const resolved = await resolveCorrelationId({ listReplyId: "abc123:1" });
+    const resolved = await resolveCorrelationId({ from: RECIPIENT, listReplyId: "abc123:1" });
     expect(resolved).toEqual({ correlationId: "abc123", selectedIndex: 1 });
   });
 
   it("resolves from a list reply id whose correlationId itself contains a colon", async () => {
-    const resolved = await resolveCorrelationId({ listReplyId: "job:42:2" });
+    const resolved = await resolveCorrelationId({ from: RECIPIENT, listReplyId: "job:42:2" });
     expect(resolved).toEqual({ correlationId: "job:42", selectedIndex: 2 });
   });
 
   it("returns null for a malformed list reply id (non-numeric index)", async () => {
-    const resolved = await resolveCorrelationId({ listReplyId: "abc123:notanumber" });
+    const resolved = await resolveCorrelationId({ from: RECIPIENT, listReplyId: "abc123:notanumber" });
     expect(resolved).toBeNull();
   });
 
   it("returns null for a list reply id with no colon", async () => {
-    const resolved = await resolveCorrelationId({ listReplyId: "abc123" });
+    const resolved = await resolveCorrelationId({ from: RECIPIENT, listReplyId: "abc123" });
     expect(resolved).toBeNull();
   });
 
@@ -90,7 +93,7 @@ describe("resolveCorrelationId", () => {
       whatsappMessageId: "wamid.1",
       createdAt: Date.now(),
     });
-    const resolved = await resolveCorrelationId({ contextMessageId: "wamid.1" });
+    const resolved = await resolveCorrelationId({ from: RECIPIENT, contextMessageId: "wamid.1" });
     expect(resolved).toEqual({ correlationId: "abc123" });
   });
 
@@ -105,7 +108,7 @@ describe("resolveCorrelationId", () => {
       whatsappMessageId: "wamid.2",
       createdAt: Date.now() - 1000,
     });
-    const resolved = await resolveCorrelationId({});
+    const resolved = await resolveCorrelationId({ from: RECIPIENT });
     expect(resolved).toEqual({ correlationId: "newer" });
   });
 
@@ -122,7 +125,7 @@ describe("resolveCorrelationId", () => {
     });
     // Simulate expiry: remove newer's backing record but leave it in the zset (what TTL does in real Redis)
     store.delete("pending:newer");
-    const resolved = await resolveCorrelationId({});
+    const resolved = await resolveCorrelationId({ from: RECIPIENT });
     expect(resolved).toEqual({ correlationId: "older" });
     // Verify the stale entry was removed from the zset
     const zset = zsets.get("pending-prompts");
@@ -130,7 +133,27 @@ describe("resolveCorrelationId", () => {
   });
 
   it("returns null when nothing is pending and there is no context", async () => {
-    const resolved = await resolveCorrelationId({});
+    const resolved = await resolveCorrelationId({ from: RECIPIENT });
+    expect(resolved).toBeNull();
+  });
+
+  it("returns null for a well-formed button id from a sender other than the configured recipient", async () => {
+    const resolved = await resolveCorrelationId({ from: "19995551234", buttonId: "approve:abc123" });
+    expect(resolved).toBeNull();
+  });
+
+  it("returns null for an empty sender", async () => {
+    const resolved = await resolveCorrelationId({ from: "", buttonId: "approve:abc123" });
+    expect(resolved).toBeNull();
+  });
+
+  it("does not let an outside sender hijack the most-recent-pending-prompt fallback", async () => {
+    await createPendingRecord("real-prompt", {
+      type: "prompt",
+      whatsappMessageId: "wamid.1",
+      createdAt: Date.now(),
+    });
+    const resolved = await resolveCorrelationId({ from: "19995551234" });
     expect(resolved).toBeNull();
   });
 });
@@ -145,7 +168,7 @@ describe("markReplied", () => {
     const updated = await markReplied("abc123", "hello");
     expect(updated?.status).toBe("replied");
     expect(updated?.value).toBe("hello");
-    expect(await resolveCorrelationId({})).toBeNull();
+    expect(await resolveCorrelationId({ from: RECIPIENT })).toBeNull();
   });
 
   it("returns null for an already-replied record (duplicate webhook delivery)", async () => {

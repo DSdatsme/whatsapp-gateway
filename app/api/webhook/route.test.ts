@@ -32,13 +32,17 @@ function signedRequest(body: unknown): Request {
   });
 }
 
+const SENDER = "15551234567";
+
 const BUTTON_REPLY_PAYLOAD = {
   entry: [
     {
       changes: [
         {
           value: {
-            messages: [{ interactive: { button_reply: { id: "approve:corr-1", title: "Approve" } } }],
+            messages: [
+              { from: SENDER, interactive: { button_reply: { id: "approve:corr-1", title: "Approve" } } },
+            ],
           },
         },
       ],
@@ -89,11 +93,34 @@ describe("POST /api/webhook", () => {
 
     const res = await POST(signedRequest(BUTTON_REPLY_PAYLOAD));
     expect(res.status).toBe(200);
+    expect(resolveCorrelationId).toHaveBeenCalledWith(
+      expect.objectContaining({ from: SENDER, buttonId: "approve:corr-1" })
+    );
     expect(markReplied).toHaveBeenCalledWith("corr-1", "approve");
     expect(deliverCallback).toHaveBeenCalledWith("https://consumer.example/hook", {
       correlationId: "corr-1",
       value: "approve",
     });
+  });
+
+  it("passes an empty sender through when the payload has no `from` field", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    const payloadWithoutFrom = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [{ interactive: { button_reply: { id: "approve:corr-1", title: "Approve" } } }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    await POST(signedRequest(payloadWithoutFrom));
+    expect(resolveCorrelationId).toHaveBeenCalledWith(expect.objectContaining({ from: "" }));
   });
 
   it("acks without error when nothing resolves (stale/unmatched reply)", async () => {
@@ -120,7 +147,9 @@ describe("POST /api/webhook", () => {
           changes: [
             {
               value: {
-                messages: [{ interactive: { list_reply: { id: "corr-2:1", title: "Green" } } }],
+                messages: [
+                  { from: SENDER, interactive: { list_reply: { id: "corr-2:1", title: "Green" } } },
+                ],
               },
             },
           ],
