@@ -13,6 +13,14 @@ vi.mock("@/lib/whatsapp", () => ({
     correlationId,
     options,
   })),
+  buildTemplatePayload: vi.fn(
+    (to: string, templateName: string, templateLanguage: string, templateParams: string[]) => ({
+      to,
+      templateName,
+      templateLanguage,
+      templateParams,
+    })
+  ),
   sendWhatsAppMessage: vi.fn(async () => ({ messageId: "wamid.1" })),
   WhatsAppSendError: class WhatsAppSendError extends Error {},
 }));
@@ -115,5 +123,44 @@ describe("POST /api/send", () => {
       data.correlationId,
       expect.objectContaining({ type: "select", options })
     );
+  });
+
+  it("rejects a template request missing templateName", async () => {
+    const res = await POST(request({ type: "template", templateLanguage: "en" }));
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error?: string };
+    expect(data.error).toMatch(/templateName/);
+  });
+
+  it("rejects a template request missing templateLanguage", async () => {
+    const res = await POST(request({ type: "template", templateName: "test_utility_basic" }));
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error?: string };
+    expect(data.error).toMatch(/templateLanguage/);
+  });
+
+  it("sends a template message and returns a generated correlationId", async () => {
+    const res = await POST(
+      request({
+        type: "template",
+        templateName: "test_utility_basic",
+        templateLanguage: "en",
+        templateParams: ["backup-service", "OK"],
+      })
+    );
+    const data = (await res.json()) as { correlationId?: string };
+    expect(res.status).toBe(200);
+    expect(typeof data.correlationId).toBe("string");
+    expect(createPendingRecord).toHaveBeenCalledWith(
+      data.correlationId,
+      expect.objectContaining({ type: "template" })
+    );
+  });
+
+  it("does not require text for a template send", async () => {
+    const res = await POST(
+      request({ type: "template", templateName: "hello_world", templateLanguage: "en_US" })
+    );
+    expect(res.status).toBe(200);
   });
 });

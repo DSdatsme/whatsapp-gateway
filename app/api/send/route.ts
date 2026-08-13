@@ -7,6 +7,7 @@ import {
   buildApprovalPayload,
   buildNotificationPayload,
   buildSelectPayload,
+  buildTemplatePayload,
   sendWhatsAppMessage,
   WhatsAppSendError,
 } from "@/lib/whatsapp";
@@ -14,13 +15,16 @@ import {
 export const runtime = "nodejs";
 
 interface SendRequestBody {
-  type: "notification" | "approval" | "prompt" | "select";
+  type: "notification" | "approval" | "prompt" | "select" | "template";
   text: string;
   correlationId?: string;
   approveLabel?: string;
   denyLabel?: string;
   options?: string[];
   callbackUrl?: string;
+  templateName?: string;
+  templateLanguage?: string;
+  templateParams?: string[];
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -34,14 +38,24 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
   }
 
-  if (!body.type || !body.text) {
-    return NextResponse.json({ error: "type and text are required" }, { status: 400 });
+  if (!body.type) {
+    return NextResponse.json({ error: "type is required" }, { status: 400 });
   }
-  if (!["notification", "approval", "prompt", "select"].includes(body.type)) {
+  if (!["notification", "approval", "prompt", "select", "template"].includes(body.type)) {
     return NextResponse.json(
-      { error: "type must be one of: notification, approval, prompt, select" },
+      { error: "type must be one of: notification, approval, prompt, select, template" },
       { status: 400 }
     );
+  }
+  if (body.type === "template") {
+    if (!body.templateName || !body.templateLanguage) {
+      return NextResponse.json(
+        { error: "templateName and templateLanguage are required for type template" },
+        { status: 400 }
+      );
+    }
+  } else if (!body.text) {
+    return NextResponse.json({ error: "type and text are required" }, { status: 400 });
   }
   if (body.type === "select" && (!Array.isArray(body.options) || body.options.length < 2 || body.options.length > 10)) {
     return NextResponse.json(
@@ -57,14 +71,16 @@ export async function POST(request: Request): Promise<Response> {
     body.type === "approval"
       ? buildApprovalPayload(
           recipient,
-          body.text,
+          body.text!,
           correlationId,
           body.approveLabel ?? "Approve",
           body.denyLabel ?? "Deny"
         )
       : body.type === "select"
-        ? buildSelectPayload(recipient, body.text, correlationId, body.options!)
-        : buildNotificationPayload(recipient, body.text);
+        ? buildSelectPayload(recipient, body.text!, correlationId, body.options!)
+        : body.type === "template"
+          ? buildTemplatePayload(recipient, body.templateName!, body.templateLanguage!, body.templateParams ?? [])
+          : buildNotificationPayload(recipient, body.text!);
 
   try {
     const { messageId } = await sendWhatsAppMessage(payload);
