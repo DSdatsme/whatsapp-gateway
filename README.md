@@ -18,7 +18,7 @@ Built for one person's own WhatsApp number acting as a personal notification/app
 
 ## Message types at a glance
 
-Every message sent through the gateway is one of these four types. Pick the row that matches what you need, then jump to [Using it from your code](#using-it-from-your-code).
+Every message sent through the gateway is one of these five types. Pick the row that matches what you need, then jump to [Using it from your code](#using-it-from-your-code).
 
 | Type | Use for | What the recipient sees | Reply `value` |
 |---|---|---|---|
@@ -26,6 +26,9 @@ Every message sent through the gateway is one of these four types. Pick the row 
 | `approval` | A yes/no decision | Text with **Approve**/**Deny** buttons (labels customizable) | `"approve"` or `"deny"` |
 | `prompt` | An open-ended question | Plain text; recipient replies with their own message | the free-text reply |
 | `select` | A multiple-choice question (2-10 options) | An interactive list picker | the exact option label picked |
+| `template` | A guaranteed-delivery alert, independent of the 24h session window | A pre-approved WhatsApp template message | whatever the template's own content says |
+
+`template` is different from the other three: it requires a message template to already exist and show **Approved** in Meta's WhatsApp Manager before you can send it — the gateway only ever references an approved template by name, it can't create or approve one. Stick to **Utility** category templates with concrete, bounded content (e.g. `"Hi, your {{1}} reported status: {{2}}. Please check your gateway if action is needed."`) — Meta's classifier rejects templates that are just one open-ended variable, and Marketing-category templates cost noticeably more per message. Parameters are positional (`{{1}}`, `{{2}}`, ...), passed as a plain ordered array.
 
 > Building an LLM/AI agent integration? See [`llms/whatsapp-gateway.md`](./llms/whatsapp-gateway.md) for a self-contained agent-oriented guide.
 
@@ -78,6 +81,9 @@ const releaseName = await gateway.sendPrompt("What should I name this release?")
 
 // Ask the recipient to pick one of several options; resolves to the exact label picked
 const environment = await gateway.sendSelect("Which environment?", ["staging", "production"]);
+
+// Guaranteed delivery regardless of session state, via a pre-approved template
+await gateway.sendTemplate("test_utility_basic", "en", ["backup-service", "OK"]);
 ```
 
 `sendApproval`, `sendPrompt`, and `sendSelect` all accept an optional options object as their last argument:
@@ -158,6 +164,11 @@ curl -X POST "$BASE_URL/api/send" \
 curl -X POST "$BASE_URL/api/send" \
   -H "Authorization: Bearer $GATEWAY_API_KEY" -H "Content-Type: application/json" \
   -d '{"type": "select", "text": "Which environment?", "options": ["staging", "production"], "correlationId": "env-pick-1"}'
+
+# template — guaranteed delivery via a pre-approved Utility template
+curl -X POST "$BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" -H "Content-Type: application/json" \
+  -d '{"type": "template", "templateName": "test_utility_basic", "templateLanguage": "en", "templateParams": ["backup-service", "OK"]}'
 ```
 
 The same shape works from a shell script with `curl`, a cron job, a CI pipeline — anything that can make an HTTP request.
@@ -166,7 +177,7 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 
 ### Endpoints
 
-- `POST /api/send` — send a `notification`, `approval`, `prompt`, or `select` message.
+- `POST /api/send` — send a `notification`, `approval`, `prompt`, `select`, or `template` message.
 - `GET|POST /api/webhook` — Meta's webhook verification handshake and inbound message/reply receiver (Meta calls this, you don't).
 - `GET /api/replies/:correlationId` — poll for the reply to a previously sent message.
 
@@ -174,12 +185,15 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 
 | Field | Required | Notes |
 |---|---|---|
-| `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`, `"select"`. |
+| `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`, `"select"`, `"template"`. |
 | `text` | yes | The message body sent to the recipient. |
 | `correlationId` | no | Caller-supplied id used to correlate replies. Auto-generated (a UUID) if omitted. |
 | `approveLabel` | no | Button label for `approval` messages (defaults to `"Approve"`). |
 | `denyLabel` | no | Button label for `approval` messages (defaults to `"Deny"`). |
 | `options` | `select` only | Array of 2-10 plain-text option labels. The reply's `value` is the exact label the recipient picked. |
+| `templateName` | `template` only | Name of an Approved template in WhatsApp Manager. |
+| `templateLanguage` | `template` only | The template's language code (e.g. `en`, `en_US`) — must match exactly. |
+| `templateParams` | no | Array of positional values for the template's `{{1}}`, `{{2}}`, ... placeholders. Defaults to none. |
 | `callbackUrl` | no | If set, the reply is POSTed to this URL instead of (or in addition to) being available via `GET /api/replies/:correlationId`. |
 
 Response is `{ "correlationId": "..." }` on success (200), or `{ "error": "..." }` on failure (400 for invalid input, 502 if the Graph API call fails).

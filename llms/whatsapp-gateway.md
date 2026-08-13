@@ -4,12 +4,13 @@ This file is written for an LLM/AI agent that needs to notify a human, ask for a
 
 ## What this is
 
-A hosted HTTP gateway in front of one WhatsApp Business phone number. You call it over plain HTTP; it handles the WhatsApp Cloud API details. Four operations:
+A hosted HTTP gateway in front of one WhatsApp Business phone number. You call it over plain HTTP; it handles the WhatsApp Cloud API details. Five operations:
 
 - **notification** — push a message, no reply expected.
 - **approval** — push a yes/no question with buttons, get back `true`/`false`.
 - **prompt** — push an open-ended question, get back free text.
 - **select** — push a question with 2-10 labeled options, get back the exact label the human picked.
+- **template** — push a pre-approved WhatsApp template message, delivered regardless of whether a 24-hour session is open. No reply is tracked.
 
 Every send returns a `correlationId` immediately (it does not wait for a reply). To get the reply, poll `GET /api/replies/:correlationId` until its status flips to `replied`.
 
@@ -85,6 +86,25 @@ curl -X POST "$GATEWAY_BASE_URL/api/send" \
 - Poll for the result the same way as the others. The reply `value` is the exact label string the human picked (e.g. `"production"`), not an index.
 - The Node client library wraps this as `gateway.sendSelect(text, options)` — see below.
 
+## Operation 5: template (guaranteed delivery via a pre-approved template)
+
+```bash
+curl -X POST "$GATEWAY_BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "template",
+    "templateName": "test_utility_basic",
+    "templateLanguage": "en",
+    "templateParams": ["backup-service", "OK"]
+  }'
+```
+
+- The template must already exist and show **Approved** in Meta's WhatsApp Manager — this operation can only reference one, never create one.
+- `templateParams` is positional: the first string fills `{{1}}` in the template body, the second fills `{{2}}`, and so on.
+- Unlike the other three operations, this is unconditionally delivered — it does not require the human to have messaged the business number recently. Use it for genuinely critical alerts where a silently-dropped `notification` isn't acceptable.
+- No reply is expected or tracked for this type; don't poll `/api/replies/:correlationId` for it.
+
 ## Polling for a reply
 
 ```bash
@@ -132,6 +152,7 @@ const gateway = createClient({ baseUrl: process.env.GATEWAY_BASE_URL!, apiKey: p
 const approved = await gateway.sendApproval("Proceed with deploy?");
 const releaseName = await gateway.sendPrompt("What should I name this release?");
 const environment = await gateway.sendSelect("Which environment?", ["staging", "production"]);
+await gateway.sendTemplate("test_utility_basic", "en", ["backup-service", "OK"]);
 ```
 
 `sendApproval`/`sendPrompt`/`sendSelect` each accept an optional `{ correlationId, pollIntervalMs, timeoutMs }` object as a last argument to override the id or the poll timing (defaults: poll every 5s, give up after 10 minutes and throw `GatewayError`).
