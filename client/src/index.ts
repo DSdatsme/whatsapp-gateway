@@ -118,5 +118,20 @@ export function createClient(options: GatewayClientOptions) {
     );
   }
 
-  return { sendNotification, sendApproval, sendPrompt, sendSelect };
+  async function sendTemplate(
+    templateName: string,
+    languageCode: string,
+    params: string[] = [],
+    opts: { correlationId?: string } = {}
+  ): Promise<void> {
+    await send({
+      type: "template",
+      templateName,
+      templateLanguage: languageCode,
+      templateParams: params,
+      correlationId: opts.correlationId,
+    });
+  }
+
+  return { sendNotification, sendApproval, sendPrompt, sendSelect, sendTemplate };
 }

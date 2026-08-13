@@ -92,6 +92,46 @@ describe("sendSelect", () => {
   });
 });
 
+describe("sendTemplate", () => {
+  it("sends a template message without polling for a reply", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ correlationId: "corr-1" }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.sendTemplate("test_utility_basic", "en", ["backup-service", "OK"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const sendCall = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(sendCall[1].body);
+    expect(sentBody).toEqual({
+      type: "template",
+      templateName: "test_utility_basic",
+      templateLanguage: "en",
+      templateParams: ["backup-service", "OK"],
+      correlationId: undefined,
+    });
+  });
+
+  it("defaults templateParams to an empty array when omitted", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ correlationId: "corr-1" }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.sendTemplate("hello_world", "en_US");
+    const sendCall = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(sendCall[1].body);
+    expect(sentBody.templateParams).toEqual([]);
+  });
+
+  it("passes a caller-supplied correlationId through", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ correlationId: "my-id" }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.sendTemplate("hello_world", "en_US", [], { correlationId: "my-id" });
+    const sendCall = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(sendCall[1].body);
+    expect(sentBody.correlationId).toBe("my-id");
+  });
+});
+
 describe("GatewayError", () => {
   it("sets error.name to GatewayError, not the generic Error", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: "bad key" }) });
