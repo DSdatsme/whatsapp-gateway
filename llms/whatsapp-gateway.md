@@ -102,7 +102,7 @@ curl -X POST "$GATEWAY_BASE_URL/api/send" \
 
 - The template must already exist and show **Approved** in Meta's WhatsApp Manager — this operation can only reference one, never create one.
 - `templateParams` is positional: the first string fills `{{1}}` in the template body, the second fills `{{2}}`, and so on.
-- Unlike the other three operations, this is unconditionally delivered — it does not require the human to have messaged the business number recently. Use it for genuinely critical alerts where a silently-dropped `notification` isn't acceptable.
+- Unlike the other four operations, this is unconditionally delivered — it does not require the human to have messaged the business number recently. Use it for genuinely critical alerts where a silently-dropped `notification` isn't acceptable.
 - No reply is expected or tracked for this type; don't poll `/api/replies/:correlationId` for it.
 
 ## Polling for a reply

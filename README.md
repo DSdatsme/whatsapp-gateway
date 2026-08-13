@@ -28,7 +28,7 @@ Every message sent through the gateway is one of these five types. Pick the row 
 | `select` | A multiple-choice question (2-10 options) | An interactive list picker | the exact option label picked |
 | `template` | A guaranteed-delivery alert, independent of the 24h session window | A pre-approved WhatsApp template message | whatever the template's own content says |
 
-`template` is different from the other three: it requires a message template to already exist and show **Approved** in Meta's WhatsApp Manager before you can send it — the gateway only ever references an approved template by name, it can't create or approve one. Stick to **Utility** category templates with concrete, bounded content (e.g. `"Hi, your {{1}} reported status: {{2}}. Please check your gateway if action is needed."`) — Meta's classifier rejects templates that are just one open-ended variable, and Marketing-category templates cost noticeably more per message. Parameters are positional (`{{1}}`, `{{2}}`, ...), passed as a plain ordered array.
+`template` is different from the other four: it requires a message template to already exist and show **Approved** in Meta's WhatsApp Manager before you can send it — the gateway only ever references an approved template by name, it can't create or approve one. Stick to **Utility** category templates with concrete, bounded content (e.g. `"Hi, your {{1}} reported status: {{2}}. Please check your gateway if action is needed."`) — Meta's classifier rejects templates that are just one open-ended variable, and Marketing-category templates cost noticeably more per message. Parameters are positional (`{{1}}`, `{{2}}`, ...), passed as a plain ordered array.
 
 > Building an LLM/AI agent integration? See [`llms/whatsapp-gateway.md`](./llms/whatsapp-gateway.md) for a self-contained agent-oriented guide.
 
@@ -186,7 +186,7 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 | Field | Required | Notes |
 |---|---|---|
 | `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`, `"select"`, `"template"`. |
-| `text` | yes | The message body sent to the recipient. |
+| `text` | unless type is `template` | The message body sent to the recipient. |
 | `correlationId` | no | Caller-supplied id used to correlate replies. Auto-generated (a UUID) if omitted. |
 | `approveLabel` | no | Button label for `approval` messages (defaults to `"Approve"`). |
 | `denyLabel` | no | Button label for `approval` messages (defaults to `"Deny"`). |
