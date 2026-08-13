@@ -63,6 +63,16 @@ export async function POST(request: Request): Promise<Response> {
       { status: 400 }
     );
   }
+  if (
+    body.type === "template" &&
+    body.templateParams !== undefined &&
+    (!Array.isArray(body.templateParams) || body.templateParams.some((p) => typeof p !== "string"))
+  ) {
+    return NextResponse.json(
+      { error: "templateParams must be an array of strings" },
+      { status: 400 }
+    );
+  }
 
   const correlationId = body.correlationId ?? randomUUID();
   const recipient = getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER");

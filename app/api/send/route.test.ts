@@ -30,7 +30,7 @@ vi.mock("@/lib/correlation", () => ({
 }));
 
 import { POST } from "@/app/api/send/route";
-import { sendWhatsAppMessage, WhatsAppSendError } from "@/lib/whatsapp";
+import { buildTemplatePayload, sendWhatsAppMessage, WhatsAppSendError } from "@/lib/whatsapp";
 import { createPendingRecord } from "@/lib/correlation";
 
 beforeEach(() => {
@@ -155,6 +155,12 @@ describe("POST /api/send", () => {
       data.correlationId,
       expect.objectContaining({ type: "template" })
     );
+    expect(buildTemplatePayload).toHaveBeenCalledWith(
+      "15551234567",
+      "test_utility_basic",
+      "en",
+      ["backup-service", "OK"]
+    );
   });
 
   it("does not require text for a template send", async () => {
@@ -162,5 +168,19 @@ describe("POST /api/send", () => {
       request({ type: "template", templateName: "hello_world", templateLanguage: "en_US" })
     );
     expect(res.status).toBe(200);
+  });
+
+  it("rejects a template request with a non-array templateParams field", async () => {
+    const res = await POST(
+      request({
+        type: "template",
+        templateName: "x",
+        templateLanguage: "en",
+        templateParams: "not-an-array",
+      })
+    );
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error?: string };
+    expect(data.error).toMatch(/templateParams/);
   });
 });
