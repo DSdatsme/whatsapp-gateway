@@ -3,6 +3,7 @@ import {
   buildApprovalPayload,
   buildNotificationPayload,
   buildSelectPayload,
+  buildTemplatePayload,
   sendWhatsAppMessage,
   WhatsAppSendError,
 } from "@/lib/whatsapp";
@@ -83,5 +84,43 @@ describe("buildSelectPayload", () => {
     const rows = payload.interactive.action.sections[0].rows;
     expect(rows[0].id).toBe("job:42:0");
     expect(rows[1].id).toBe("job:42:1");
+  });
+});
+
+describe("buildTemplatePayload", () => {
+  it("builds a template payload with positional text parameters", () => {
+    const payload = buildTemplatePayload(
+      "1234567890",
+      "test_utility_basic",
+      "en",
+      ["backup-service", "OK"]
+    ) as any;
+    expect(payload).toEqual({
+      messaging_product: "whatsapp",
+      to: "1234567890",
+      type: "template",
+      template: {
+        name: "test_utility_basic",
+        language: { code: "en" },
+        components: [
+          {
+            type: "body",
+            parameters: [
+              { type: "text", text: "backup-service" },
+              { type: "text", text: "OK" },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("omits components entirely when there are no parameters", () => {
+    const payload = buildTemplatePayload("1234567890", "hello_world", "en_US", []) as any;
+    expect(payload.template).toEqual({
+      name: "hello_world",
+      language: { code: "en_US" },
+    });
+    expect(payload.template.components).toBeUndefined();
   });
 });

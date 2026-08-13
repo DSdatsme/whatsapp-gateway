@@ -106,3 +106,23 @@ export function buildApprovalPayload(
     },
   };
 }
+
+export function buildTemplatePayload(
+  to: string,
+  templateName: string,
+  languageCode: string,
+  params: string[]
+): Record<string, unknown> {
+  return {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: languageCode },
+      ...(params.length > 0
+        ? { components: [{ type: "body", parameters: params.map((text) => ({ type: "text", text })) }] }
+        : {}),
+    },
+  };
+}
