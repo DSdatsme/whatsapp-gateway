@@ -125,6 +125,53 @@ describe("POST /api/send", () => {
     );
   });
 
+  it("sends only to the default recipient when 'also' is omitted", async () => {
+    const { buildNotificationPayload, sendWhatsAppMessage } = await import("@/lib/whatsapp");
+    await POST(request({ type: "notification", text: "hi" }));
+    expect(buildNotificationPayload).toHaveBeenCalledTimes(1);
+    expect(buildNotificationPayload).toHaveBeenCalledWith("15551234567", "hi");
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends an additional copy to 'also' without dropping the default recipient", async () => {
+    const { buildNotificationPayload, sendWhatsAppMessage } = await import("@/lib/whatsapp");
+    const res = await POST(request({ type: "notification", text: "hi", also: "919876543210" }));
+    expect(res.status).toBe(200);
+    expect(buildNotificationPayload).toHaveBeenNthCalledWith(1, "15551234567", "hi");
+    expect(buildNotificationPayload).toHaveBeenNthCalledWith(2, "919876543210", "hi");
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("doesn't double-send when 'also' matches the default recipient", async () => {
+    const { sendWhatsAppMessage } = await import("@/lib/whatsapp");
+    await POST(request({ type: "notification", text: "hi", also: "15551234567" }));
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("still succeeds and reports 'alsoError' if the extra send to 'also' fails", async () => {
+    const { sendWhatsAppMessage, WhatsAppSendError: SendErr } = await import("@/lib/whatsapp");
+    vi.mocked(sendWhatsAppMessage)
+      .mockResolvedValueOnce({ messageId: "wamid.1" })
+      .mockRejectedValueOnce(new SendErr("also-recipient boom"));
+    const res = await POST(request({ type: "notification", text: "hi", also: "919876543210" }));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { correlationId?: string; alsoError?: string };
+    expect(typeof data.correlationId).toBe("string");
+    expect(data.alsoError).toMatch(/also-recipient boom/);
+  });
+
+  it("rejects an 'also' value that isn't digits-only E.164", async () => {
+    const res = await POST(request({ type: "notification", text: "hi", also: "+91 98765-43210" }));
+    expect(res.status).toBe(400);
+    const data = (await res.json()) as { error?: string };
+    expect(data.error).toMatch(/also must be digits only/i);
+  });
+
+  it("rejects an 'also' value that's too short", async () => {
+    const res = await POST(request({ type: "notification", text: "hi", also: "12345" }));
+    expect(res.status).toBe(400);
+  });
+
   it("rejects a template request missing templateName", async () => {
     const res = await POST(request({ type: "template", templateLanguage: "en" }));
     expect(res.status).toBe(400);

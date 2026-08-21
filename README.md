@@ -187,6 +187,7 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 |---|---|---|
 | `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`, `"select"`, `"template"`. |
 | `text` | unless type is `template` | The message body sent to the recipient. |
+| `also` | no | Sends an extra copy of this message to a second number, in addition to (never instead of) `WHATSAPP_RECIPIENT_NUMBER`. Digits-only E.164 (no leading `+`), e.g. `"919876543210"`. Replies from this second recipient aren't correlated — only the primary recipient's reply resolves `GET /api/replies/:correlationId`. See the 24-hour window caveat below. |
 | `correlationId` | no | Caller-supplied id used to correlate replies. Auto-generated (a UUID) if omitted. |
 | `approveLabel` | no | Button label for `approval` messages (defaults to `"Approve"`). |
 | `denyLabel` | no | Button label for `approval` messages (defaults to `"Deny"`). |
@@ -212,7 +213,7 @@ Response is `{ "correlationId": "..." }` on success (200), or `{ "error": "..." 
 |---|---|
 | `WHATSAPP_TOKEN` | Graph API access token |
 | `WHATSAPP_PHONE_ID` | WhatsApp Business phone number ID |
-| `WHATSAPP_RECIPIENT_NUMBER` | Fixed recipient number for all sends |
+| `WHATSAPP_RECIPIENT_NUMBER` | Fixed recipient number for all sends; always honored, optionally joined by a per-request `also` recipient |
 | `WHATSAPP_APP_SECRET` | Used to verify `X-Hub-Signature-256` on inbound webhooks |
 | `WHATSAPP_VERIFY_TOKEN` | Used for the webhook verification handshake (you make this up) |
 | `GATEWAY_API_KEY` | Shared-secret bearer token consumers use to call `/api/send` and `/api/replies/:id` (you make this up) |
@@ -235,7 +236,7 @@ npm test
 Graph API returns `200` with a real message ID as soon as it *accepts* a message — that does not mean it was actually delivered. Two common reasons a message silently never arrives, neither of which is a bug in this gateway:
 
 1. **Using a test/sandbox WhatsApp number.** The free test number Meta provisions in **WhatsApp → API Setup** can only message phone numbers explicitly added and OTP-verified as test recipients. Add the recipient there (**API Setup → "To" field → Manage phone number list**) before expecting any delivery.
-2. **The 24-hour customer service window is closed.** WhatsApp only allows free-form messages (which is everything this gateway sends — `notification`, `approval`, `prompt`, and `select` are all free-form, not templates) to a recipient who has messaged the business number within the last 24 hours. If the recipient hasn't messaged first (or it's been >24h since they last did), Graph API still returns 200, but the message is dropped. Have the recipient send any message to the business number to open the window, then retry. A pre-approved **template** message is the only message type exempt from this rule — useful for confirming your token/phone ID/recipient setup is otherwise correct without needing an open session.
+2. **The 24-hour customer service window is closed.** WhatsApp only allows free-form messages (which is everything this gateway sends — `notification`, `approval`, `prompt`, and `select` are all free-form, not templates) to a recipient who has messaged the business number within the last 24 hours. If the recipient hasn't messaged first (or it's been >24h since they last did), Graph API still returns 200, but the message is dropped. Have the recipient send any message to the business number to open the window, then retry. A pre-approved **template** message is the only message type exempt from this rule — useful for confirming your token/phone ID/recipient setup is otherwise correct without needing an open session. This applies to `also` recipients too: a one-off second recipient who has never messaged the business number won't receive a `notification`/`approval`/`prompt`/`select` send, only a `template` one.
 
 ### Sends arrive but replies never reach `/api/webhook`
 

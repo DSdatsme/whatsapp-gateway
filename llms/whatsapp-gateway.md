@@ -14,6 +14,8 @@ A hosted HTTP gateway in front of one WhatsApp Business phone number. You call i
 
 Every send returns a `correlationId` immediately (it does not wait for a reply). To get the reply, poll `GET /api/replies/:correlationId` until its status flips to `replied`.
 
+Every operation always goes to the gateway operator's own fixed number — that never changes. Add `"also": "<digits-only E.164, no +>"` to any request body to *additionally* send a copy to a second number for that one call — see "Sending an extra copy to another recipient" below before relying on this for a non-template type.
+
 ## Before you integrate
 
 You need three things from whoever runs this gateway — ask for them if you don't have them, don't guess or invent values:
@@ -105,6 +107,21 @@ curl -X POST "$GATEWAY_BASE_URL/api/send" \
 - Unlike the other four operations, this is unconditionally delivered — it does not require the human to have messaged the business number recently. Use it for genuinely critical alerts where a silently-dropped `notification` isn't acceptable.
 - No reply is expected or tracked for this type; don't poll `/api/replies/:correlationId` for it.
 
+## Sending an extra copy to another recipient
+
+```bash
+curl -X POST "$GATEWAY_BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "notification", "text": "Nightly job finished.", "also": "919876543210"}'
+```
+
+- `also` must be digits only, E.164 format, no leading `+` (8-15 digits) — anything else gets a 400.
+- This is additive, not a replacement: the default `WHATSAPP_RECIPIENT_NUMBER` always receives the message too. `also` never suppresses it.
+- Replies aren't correlated for the `also` recipient — only the default recipient's reply resolves `GET /api/replies/:correlationId`, so don't rely on `also` for `approval`/`prompt`/`select` if you need that second person's answer tracked; it's meant for CC'ing a heads-up, not for routing the interactive flow to them.
+- If the extra send to `also` fails, the primary send to the default recipient still succeeds — the response includes an `alsoError` field describing the failure, but the request itself still returns 200 with a valid `correlationId`.
+- **The 24-hour session window still applies per-recipient.** `notification`/`approval`/`prompt`/`select` are all free-form messages — WhatsApp silently drops them (Graph API still returns 200) if the `also` recipient hasn't messaged the business number within the last 24 hours. For a recipient who has never opened a session with this business number, use `type: "template"` instead, which delivers unconditionally.
+
 ## Polling for a reply
 
 ```bash
@@ -155,7 +172,7 @@ const environment = await gateway.sendSelect("Which environment?", ["staging", "
 await gateway.sendTemplate("test_utility_basic", "en", ["backup-service", "OK"]);
 ```
 
-`sendApproval`/`sendPrompt`/`sendSelect` each accept an optional `{ correlationId, pollIntervalMs, timeoutMs }` object as a last argument to override the id or the poll timing (defaults: poll every 5s, give up after 10 minutes and throw `GatewayError`).
+`sendApproval`/`sendPrompt`/`sendSelect` each accept an optional `{ correlationId, pollIntervalMs, timeoutMs, also }` object as a last argument to override the id, the poll timing, or CC a second recipient (defaults: poll every 5s, give up after 10 minutes and throw `GatewayError`). `sendNotification(text, { also })` and `sendTemplate(name, lang, params, { correlationId, also })` accept the same `also`.
 
 ## Things that will trip you up if you don't know about them
 

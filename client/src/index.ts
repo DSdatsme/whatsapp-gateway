@@ -8,6 +8,8 @@ export interface SendOptions {
   callbackUrl?: string;
   pollIntervalMs?: number;
   timeoutMs?: number;
+  /** Sends an extra copy to a second recipient, in addition to the gateway's default. Digits-only E.164, no leading "+". */
+  also?: string;
 }
 
 export class GatewayError extends Error {
@@ -55,8 +57,8 @@ export function createClient(options: GatewayClientOptions) {
     throw new GatewayError(`timed out waiting for reply to ${correlationId}`);
   }
 
-  async function sendNotification(text: string): Promise<void> {
-    await send({ type: "notification", text });
+  async function sendNotification(text: string, opts: SendOptions = {}): Promise<void> {
+    await send({ type: "notification", text, also: opts.also });
   }
 
   async function sendApproval(text: string, opts: SendOptions = {}): Promise<boolean> {
@@ -70,6 +72,7 @@ export function createClient(options: GatewayClientOptions) {
       type: "approval",
       text,
       correlationId: opts.correlationId,
+      also: opts.also,
     });
     const value = await pollReply(
       correlationId,
@@ -90,6 +93,7 @@ export function createClient(options: GatewayClientOptions) {
       type: "prompt",
       text,
       correlationId: opts.correlationId,
+      also: opts.also,
     });
     return pollReply(
       correlationId,
@@ -110,6 +114,7 @@ export function createClient(options: GatewayClientOptions) {
       text,
       options: selectOptions,
       correlationId: opts.correlationId,
+      also: opts.also,
     });
     return pollReply(
       correlationId,
@@ -122,7 +127,7 @@ export function createClient(options: GatewayClientOptions) {
     templateName: string,
     languageCode: string,
     params: string[] = [],
-    opts: { correlationId?: string } = {}
+    opts: { correlationId?: string; also?: string } = {}
   ): Promise<void> {
     await send({
       type: "template",
@@ -130,6 +135,7 @@ export function createClient(options: GatewayClientOptions) {
       templateLanguage: languageCode,
       templateParams: params,
       correlationId: opts.correlationId,
+      also: opts.also,
     });
   }
 

@@ -17,6 +17,7 @@ export const runtime = "nodejs";
 interface SendRequestBody {
   type: "notification" | "approval" | "prompt" | "select" | "template";
   text: string;
+  also?: string;
   correlationId?: string;
   approveLabel?: string;
   denyLabel?: string;
@@ -25,6 +26,19 @@ interface SendRequestBody {
   templateName?: string;
   templateLanguage?: string;
   templateParams?: string[];
+}
+
+// E.164 without the leading "+", matching what the Graph API's "to" field expects.
+const PHONE_NUMBER_PATTERN = /^\d{8,15}$/;
+
+function buildPayload(type: SendRequestBody["type"], recipient: string, body: Partial<SendRequestBody>, correlationId: string) {
+  return type === "approval"
+    ? buildApprovalPayload(recipient, body.text!, correlationId, body.approveLabel ?? "Approve", body.denyLabel ?? "Deny")
+    : type === "select"
+      ? buildSelectPayload(recipient, body.text!, correlationId, body.options!)
+      : type === "template"
+        ? buildTemplatePayload(recipient, body.templateName!, body.templateLanguage!, body.templateParams ?? [])
+        : buildNotificationPayload(recipient, body.text!);
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -73,24 +87,17 @@ export async function POST(request: Request): Promise<Response> {
       { status: 400 }
     );
   }
+  if (body.also !== undefined && !PHONE_NUMBER_PATTERN.test(body.also)) {
+    return NextResponse.json(
+      { error: "also must be digits only in E.164 format without a leading +, e.g. 15551234567" },
+      { status: 400 }
+    );
+  }
 
   const correlationId = body.correlationId ?? randomUUID();
   const recipient = getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER");
 
-  const payload =
-    body.type === "approval"
-      ? buildApprovalPayload(
-          recipient,
-          body.text!,
-          correlationId,
-          body.approveLabel ?? "Approve",
-          body.denyLabel ?? "Deny"
-        )
-      : body.type === "select"
-        ? buildSelectPayload(recipient, body.text!, correlationId, body.options!)
-        : body.type === "template"
-          ? buildTemplatePayload(recipient, body.templateName!, body.templateLanguage!, body.templateParams ?? [])
-          : buildNotificationPayload(recipient, body.text!);
+  const payload = buildPayload(body.type, recipient, body, correlationId);
 
   try {
     const { messageId } = await sendWhatsAppMessage(payload);
@@ -101,7 +108,18 @@ export async function POST(request: Request): Promise<Response> {
       createdAt: Date.now(),
       ...(body.type === "select" ? { options: body.options } : {}),
     });
-    return NextResponse.json({ correlationId }, { status: 200 });
+
+    let alsoError: string | undefined;
+    if (body.also && body.also !== recipient) {
+      try {
+        await sendWhatsAppMessage(buildPayload(body.type, body.also, body, correlationId));
+      } catch (err) {
+        alsoError = err instanceof WhatsAppSendError ? err.message : "unknown error sending to 'also' recipient";
+        console.error(`Failed to send copy to 'also' recipient ${body.also}: ${alsoError}`);
+      }
+    }
+
+    return NextResponse.json({ correlationId, ...(alsoError ? { alsoError } : {}) }, { status: 200 });
   } catch (err) {
     if (err instanceof WhatsAppSendError) {
       return NextResponse.json({ error: err.message }, { status: 502 });
