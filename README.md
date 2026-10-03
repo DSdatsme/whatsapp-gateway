@@ -4,6 +4,8 @@ A small hosted service that owns one WhatsApp Business Cloud API phone number an
 
 Built for one person's own WhatsApp number acting as a personal notification/approval channel for multiple independent apps and scripts: every consumer sends through this one gateway, and every reply gets routed back to whichever consumer asked the question.
 
+**Live deployment:** `https://whatsapp-gateway.darshitkumarsuratwala.store` — use this as the base URL (`baseUrl` / `GATEWAY_BASE_URL`) when calling the gateway. Anywhere below that says `https://<your-deployment>`, this is the value for the existing instance.
+
 **Contents:**
 - [Message types at a glance](#message-types-at-a-glance)
 - [Quickstart: deploying your own gateway](#quickstart-deploying-your-own-gateway)
@@ -41,7 +43,7 @@ Every message sent through the gateway is one of these five types. Pick the row 
    vercel --prod
    ```
 3. **Set environment variables** in the Vercel dashboard (Project Settings → Environment Variables) — see the [Environment variables](#environment-variables) table below for the full list. `WHATSAPP_VERIFY_TOKEN` and `GATEWAY_API_KEY` aren't issued by Meta — make up any random strings for those yourself.
-4. **Provision Redis:** add the Upstash integration from the Vercel Marketplace (Storage tab) — it provisions a database and sets `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` automatically.
+4. **Provision Redis:** add the Upstash integration from the Vercel Marketplace (Storage tab) — it provisions a database and sets `KV_REST_API_URL`/`KV_REST_API_TOKEN` automatically. It also adds `KV_URL`, `REDIS_URL` and `KV_REST_API_READ_ONLY_TOKEN`, which the gateway doesn't use; you can delete those.
 5. **Register the webhook with Meta** — this is two separate steps people commonly miss one of:
    - In **WhatsApp → Configuration**, set the Callback URL to `https://<your-deployment>/api/webhook` and the Verify Token to your `WHATSAPP_VERIFY_TOKEN`, click **Verify and Save**, then subscribe to the **messages** field.
    - Separately, subscribe your WhatsApp Business Account (WABA) to send its events through this app — see [Troubleshooting](#troubleshooting) below, this step is easy to miss and nothing will tell you it's missing.
@@ -217,7 +219,7 @@ Response is `{ "correlationId": "..." }` on success (200), or `{ "error": "..." 
 | `WHATSAPP_APP_SECRET` | Used to verify `X-Hub-Signature-256` on inbound webhooks |
 | `WHATSAPP_VERIFY_TOKEN` | Used for the webhook verification handshake (you make this up) |
 | `GATEWAY_API_KEY` | Shared-secret bearer token consumers use to call `/api/send` and `/api/replies/:id` (you make this up) |
-| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis credentials (pending-reply storage) |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash Redis credentials (pending-reply storage), set by the Upstash integration. `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work and take precedence if both are set. |
 
 See `.env.local.example` for the same list as a template.
 

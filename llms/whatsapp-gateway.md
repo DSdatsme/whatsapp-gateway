@@ -20,7 +20,7 @@ Every operation always goes to the gateway operator's own fixed number — that 
 
 You need three things from whoever runs this gateway — ask for them if you don't have them, don't guess or invent values:
 
-- `GATEWAY_BASE_URL` — the deployed gateway's URL (e.g. `https://whatsapp-gateway-pi.vercel.app`).
+- `GATEWAY_BASE_URL` — the deployed gateway's URL (e.g. `https://whatsapp-gateway.darshitkumarsuratwala.store`).
 - `GATEWAY_API_KEY` — bearer token for the `Authorization` header.
 
 All requests below use `Authorization: Bearer $GATEWAY_API_KEY`.
