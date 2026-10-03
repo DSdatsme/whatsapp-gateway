@@ -11,7 +11,7 @@ export class WhatsAppSendError extends Error {
 
 interface GraphApiResponse {
   messages?: { id: string }[];
-  error?: { message: string };
+  error?: { message: string; code?: number; error_subcode?: number; fbtrace_id?: string };
 }
 
 export async function sendWhatsAppMessage(
@@ -35,7 +35,10 @@ export async function sendWhatsAppMessage(
     const data = (await res.json()) as GraphApiResponse;
     if (!res.ok) {
       const error = new WhatsAppSendError(data?.error?.message ?? `Graph API error (${res.status})`);
-      console.error(`WhatsApp send failed: ${error.message}`);
+      console.error(
+        `WhatsApp send failed: ${error.message} (http=${res.status}, code=${data?.error?.code}, ` +
+          `subcode=${data?.error?.error_subcode}, fbtrace_id=${data?.error?.fbtrace_id})`
+      );
       throw error;
     }
     return { messageId: data.messages![0].id };

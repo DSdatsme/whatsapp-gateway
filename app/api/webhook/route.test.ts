@@ -34,6 +34,15 @@ function signedRequest(body: unknown): Request {
 
 const SENDER = "15551234567";
 
+function statusPayload(status: Record<string, unknown>) {
+  return { entry: [{ changes: [{ value: { statuses: [status] } }] }] };
+}
+
+// True if a single logged line contains every one of `parts`.
+function loggedLine(spy: { mock: { calls: unknown[][] } }, ...parts: string[]): boolean {
+  return spy.mock.calls.some(([line]) => parts.every((part) => String(line).includes(part)));
+}
+
 const BUTTON_REPLY_PAYLOAD = {
   entry: [
     {
@@ -178,5 +187,51 @@ describe("POST /api/webhook", () => {
     const res = await POST(signedRequest(LIST_REPLY_PAYLOAD));
     expect(res.status).toBe(200);
     expect(markReplied).toHaveBeenCalledWith("corr-2", "Green");
+  });
+
+  it("logs a failed delivery with the message id, Meta's error code, and the error details", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(
+      signedRequest(
+        statusPayload({
+          id: "wamid.failed",
+          status: "failed",
+          recipient_id: SENDER,
+          errors: [
+            {
+              code: 131047,
+              title: "Re-engagement message",
+              error_data: { details: "Message failed to send because more than 24 hours have passed" },
+            },
+          ],
+        })
+      )
+    );
+    expect(res.status).toBe(200);
+    expect(loggedLine(errorSpy, "wamid.failed", "131047", "more than 24 hours have passed")).toBe(true);
+    errorSpy.mockRestore();
+  });
+
+  it("logs a non-failed status update with its status and message id", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await POST(
+      signedRequest(statusPayload({ id: "wamid.ok", status: "delivered", recipient_id: SENDER }))
+    );
+    expect(res.status).toBe(200);
+    expect(loggedLine(logSpy, "wamid.ok", "delivered")).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it("logs the sender and message type when an inbound message matches no pending reply", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    const res = await POST(
+      signedRequest({
+        entry: [{ changes: [{ value: { messages: [{ from: SENDER, type: "text", text: { body: "hey" } }] } }] }],
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(loggedLine(logSpy, SENDER, "text")).toBe(true);
+    logSpy.mockRestore();
   });
 });

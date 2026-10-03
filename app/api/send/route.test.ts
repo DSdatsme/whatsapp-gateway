@@ -39,6 +39,11 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// True if a single logged line contains every one of `parts`.
+function loggedLine(spy: { mock: { calls: unknown[][] } }, ...parts: string[]): boolean {
+  return spy.mock.calls.some(([line]) => parts.every((part) => String(line).includes(part)));
+}
+
 function request(body: unknown, apiKey = "test-key"): Request {
   return new Request("https://gateway.example/api/send", {
     method: "POST",
@@ -87,6 +92,24 @@ describe("POST /api/send", () => {
       data.correlationId,
       expect.objectContaining({ type: "notification" })
     );
+  });
+
+  it("logs the correlationId together with the WhatsApp message id after sending", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await POST(request({ type: "notification", text: "hi", correlationId: "corr-log" }));
+    expect(res.status).toBe(200);
+    expect(loggedLine(logSpy, "corr-log", "wamid.1")).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it("logs that the message already went out when storing the pending record fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createPendingRecord).mockRejectedValueOnce(new Error("getaddrinfo ENOTFOUND redis.example"));
+    await expect(
+      POST(request({ type: "notification", text: "hi", correlationId: "corr-redis" }))
+    ).rejects.toThrow("ENOTFOUND");
+    expect(loggedLine(errorSpy, "corr-redis", "wamid.1", "ENOTFOUND")).toBe(true);
+    errorSpy.mockRestore();
   });
 
   it("returns 502 when the Graph API call fails, and never creates a pending record", async () => {

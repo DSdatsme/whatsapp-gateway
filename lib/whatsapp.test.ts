@@ -43,6 +43,24 @@ describe("sendWhatsAppMessage", () => {
     ).rejects.toThrow(WhatsAppSendError);
   });
 
+  it("logs Meta's error code and trace id when the Graph API rejects a send", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error: { message: "Recipient phone number not in allowed list", code: 131030, fbtrace_id: "AbCdEf123" },
+      }),
+    }) as unknown as typeof fetch;
+
+    await expect(
+      sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"))
+    ).rejects.toThrow(WhatsAppSendError);
+    expect(
+      errorSpy.mock.calls.some(([line]) => String(line).includes("131030") && String(line).includes("AbCdEf123"))
+    ).toBe(true);
+  });
+
   it("throws WhatsAppSendError on network failure", async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("network down")) as unknown as typeof fetch;
 

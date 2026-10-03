@@ -6,6 +6,28 @@ import { deliverCallback } from "@/lib/callback";
 
 export const runtime = "nodejs";
 
+interface WhatsAppStatus {
+  id?: string;
+  status?: string;
+  recipient_id?: string;
+  errors?: { code?: number; title?: string; message?: string; error_data?: { details?: string } }[];
+}
+
+// Meta accepts a send (200 + message id) before it knows whether delivery will
+// succeed, e.g. free-form text outside the 24h window is only reported as failed
+// here, so this is the only place a dropped message shows up.
+function logStatus(status: WhatsAppStatus) {
+  const summary = `messageId=${status.id}, status=${status.status}, recipient=${status.recipient_id}`;
+  if (status.status === "failed") {
+    const reasons = (status.errors ?? [])
+      .map((e) => `code=${e.code} ${e.title}: ${e.error_data?.details ?? e.message}`)
+      .join("; ");
+    console.error(`WhatsApp delivery failed: ${summary}, ${reasons}`);
+    return;
+  }
+  console.log(`WhatsApp status update: ${summary}`);
+}
+
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const mode = url.searchParams.get("hub.mode");
@@ -28,11 +50,16 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const event = JSON.parse(rawBody);
-  const message = event?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const payload = event?.entry?.[0]?.changes?.[0]?.value;
+  const message = payload?.messages?.[0];
+
+  for (const status of (payload?.statuses ?? []) as WhatsAppStatus[]) {
+    logStatus(status);
+  }
 
   if (!message) {
-    // Status updates (delivered/read receipts) and other non-message events
-    // land here too - nothing to correlate, just ack.
+    // Status updates (logged above) and other non-message events land here
+    // too - nothing to correlate, just ack.
     return NextResponse.json({ ok: true });
   }
 
@@ -44,7 +71,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const resolved = await resolveCorrelationId({ from, buttonId, listReplyId, contextMessageId });
   if (!resolved) {
-    console.log("Webhook ack without action - no matching pending reply");
+    console.log(`Webhook ack without action - no matching pending reply (from=${from}, type=${message.type})`);
     return NextResponse.json({ ok: true });
   }
 

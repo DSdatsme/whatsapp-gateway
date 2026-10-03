@@ -31,6 +31,12 @@ interface SendRequestBody {
 // E.164 without the leading "+", matching what the Graph API's "to" field expects.
 const PHONE_NUMBER_PATTERN = /^\d{8,15}$/;
 
+// Node's fetch reports DNS/network failures as "fetch failed", with the real reason in `cause`.
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  return err.cause instanceof Error ? `${err.message}: ${err.cause.message}` : err.message;
+}
+
 function buildPayload(type: SendRequestBody["type"], recipient: string, body: Partial<SendRequestBody>, correlationId: string) {
   return type === "approval"
     ? buildApprovalPayload(recipient, body.text!, correlationId, body.approveLabel ?? "Approve", body.denyLabel ?? "Deny")
@@ -101,13 +107,24 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const { messageId } = await sendWhatsAppMessage(payload);
-    await createPendingRecord(correlationId, {
-      type: body.type,
-      callbackUrl: body.callbackUrl,
-      whatsappMessageId: messageId,
-      createdAt: Date.now(),
-      ...(body.type === "select" ? { options: body.options } : {}),
-    });
+    console.log(`Sent ${body.type} message: correlationId=${correlationId}, messageId=${messageId}`);
+    try {
+      await createPendingRecord(correlationId, {
+        type: body.type,
+        callbackUrl: body.callbackUrl,
+        whatsappMessageId: messageId,
+        createdAt: Date.now(),
+        ...(body.type === "select" ? { options: body.options } : {}),
+      });
+    } catch (err) {
+      // The message has already gone out at this point, so a retry by the caller
+      // would send a duplicate - make that explicit in the logs.
+      console.error(
+        `Message was sent but storing its pending record failed: correlationId=${correlationId}, ` +
+          `messageId=${messageId}, error=${describeError(err)}`
+      );
+      throw err;
+    }
 
     let alsoError: string | undefined;
     if (body.also && body.also !== recipient) {
