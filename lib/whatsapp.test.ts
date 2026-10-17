@@ -142,3 +142,57 @@ describe("buildTemplatePayload", () => {
     expect(payload.template.components).toBeUndefined();
   });
 });
+
+describe("sendWhatsAppMessage resilience", () => {
+  it("gives the Graph API call a timeout signal so a hung request can't stall the function", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ messages: [{ id: "wamid.1" }] }),
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"));
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/messages"),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  it("reports a timeout as a WhatsAppSendError that says the message may still have gone out", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    global.fetch = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" })) as unknown as typeof fetch;
+
+    const attempt = sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"));
+    await expect(attempt).rejects.toThrow(WhatsAppSendError);
+    await expect(attempt).rejects.toThrow(/timed out.*may or may not have been sent/i);
+  });
+
+  it("reports a non-JSON error body (e.g. an HTML 502 from a proxy) with the HTTP status", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    }) as unknown as typeof fetch;
+
+    await expect(sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"))).rejects.toThrow(
+      /Graph API error \(502\)/
+    );
+  });
+
+  it("rejects a success response that carries no message id instead of crashing on it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    }) as unknown as typeof fetch;
+
+    const attempt = sendWhatsAppMessage(buildNotificationPayload("1234567890", "hi"));
+    await expect(attempt).rejects.toThrow(WhatsAppSendError);
+    await expect(attempt).rejects.toThrow(/no message id.*may have been sent/i);
+  });
+});

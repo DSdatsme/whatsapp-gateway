@@ -43,7 +43,7 @@ describe("deliverCallback", () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
       "Failed to deliver callback after 2 attempts",
-      { callbackUrl: "https://consumer.example/hook", correlationId: "c1" }
+      { callbackUrl: "https://consumer.example", correlationId: "c1" }
     );
   });
 
@@ -53,5 +53,52 @@ describe("deliverCallback", () => {
 
     await deliverCallback("https://consumer.example/hook", { correlationId: "c1", value: "approve" }, 0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("deliverCallback hardening", () => {
+  it("does not follow redirects, so a callback URL can't bounce the gateway to another host", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await deliverCallback("https://consumer.example/hook", { correlationId: "c1", value: "approve" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://consumer.example/hook",
+      expect.objectContaining({ redirect: "manual" })
+    );
+  });
+
+  it.each([
+    ["query string", "https://consumer.example/hook?token=s3cret"],
+    ["path (as in chat webhook URLs)", "https://hooks.example/services/T000/B000/s3cret"],
+  ])("keeps a secret in the %s out of the failure log", async (_where, url) => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    global.fetch = vi.fn().mockRejectedValue(new Error("down")) as unknown as typeof fetch;
+
+    await deliverCallback(url, { correlationId: "c1", value: "approve" }, 1);
+    const logged = JSON.stringify(warnSpy.mock.calls);
+    expect(logged).toContain(new URL(url).origin);
+    expect(logged).not.toContain("s3cret");
+  });
+});
+
+describe("deliverCallback timeout", () => {
+  it("waits long enough for a slow consumer to acknowledge, since a timed-out request may still be processed", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    global.fetch = vi.fn().mockResolvedValue({ ok: true }) as unknown as typeof fetch;
+
+    await deliverCallback("https://consumer.example/hook", { correlationId: "c1", value: "approve" });
+    expect(timeoutSpy).toHaveBeenCalledWith(15_000);
+  });
+
+  it("gives every attempt a timeout signal so a hung consumer can't hold the work open", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await deliverCallback("https://consumer.example/hook", { correlationId: "c1", value: "approve" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://consumer.example/hook",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 });

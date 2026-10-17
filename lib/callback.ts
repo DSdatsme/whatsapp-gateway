@@ -1,3 +1,13 @@
+const ATTEMPT_TIMEOUT_MS = 15_000;
+
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "(invalid url)";
+  }
+}
+
 export async function deliverCallback(
   callbackUrl: string,
   payload: { correlationId: string; value: string },
@@ -10,6 +20,8 @@ export async function deliverCallback(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        redirect: "manual",
+        signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
       });
       if (res.ok) return;
     } catch {
@@ -20,7 +32,7 @@ export async function deliverCallback(
   try {
     console.warn(
       `Failed to deliver callback after ${effectiveAttempts} attempts`,
-      { callbackUrl, correlationId: payload.correlationId }
+      { callbackUrl: originOf(callbackUrl), correlationId: payload.correlationId }
     );
   } catch {
     // Silence any logging failure - deliverCallback must never throw under any circumstance

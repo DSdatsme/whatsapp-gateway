@@ -3,6 +3,33 @@ export interface GatewayClientOptions {
   apiKey: string;
 }
 
+export interface FallbackTemplate {
+  name: string;
+  language: string;
+  params?: string[];
+}
+
+export interface SendResult {
+  correlationId: string;
+  messageId?: string;
+  viaTemplate?: boolean;
+  alsoError?: string;
+}
+
+export interface MessageStatus {
+  messageId: string;
+  status: "sent" | "delivered" | "read" | "failed";
+  updatedAt: number;
+  recipient?: string;
+  error?: { code?: number; title?: string; details?: string };
+}
+
+export interface WindowState {
+  open: boolean;
+  lastInboundAt: number | null;
+  expiresAt: number | null;
+}
+
 export interface SendOptions {
   correlationId?: string;
   callbackUrl?: string;
@@ -10,6 +37,10 @@ export interface SendOptions {
   timeoutMs?: number;
   /** Sends an extra copy to a second recipient, in addition to the gateway's default. Digits-only E.164, no leading "+". */
   also?: string;
+}
+
+export interface NotificationOptions extends SendOptions {
+  fallbackTemplate?: FallbackTemplate;
 }
 
 export class GatewayError extends Error {
@@ -23,7 +54,7 @@ const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 export function createClient(options: GatewayClientOptions) {
-  async function send(body: Record<string, unknown>): Promise<{ correlationId: string }> {
+  async function send(body: Record<string, unknown>): Promise<SendResult> {
     const res = await fetch(`${options.baseUrl}/api/send`, {
       method: "POST",
       headers: {
@@ -32,8 +63,9 @@ export function createClient(options: GatewayClientOptions) {
       },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new GatewayError(data.error ?? `send failed (${res.status})`);
+    if (!data.correlationId) throw new GatewayError("gateway returned an unreadable response");
     return data;
   }
 
@@ -45,7 +77,7 @@ export function createClient(options: GatewayClientOptions) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-      const res = await fetch(`${options.baseUrl}/api/replies/${correlationId}`, {
+      const res = await fetch(`${options.baseUrl}/api/replies/${encodeURIComponent(correlationId)}`, {
         headers: { Authorization: `Bearer ${options.apiKey}` },
       });
       if (!res.ok) {
@@ -57,8 +89,8 @@ export function createClient(options: GatewayClientOptions) {
     throw new GatewayError(`timed out waiting for reply to ${correlationId}`);
   }
 
-  async function sendNotification(text: string, opts: SendOptions = {}): Promise<void> {
-    await send({ type: "notification", text, also: opts.also });
+  async function sendNotification(text: string, opts: NotificationOptions = {}): Promise<SendResult> {
+    return send({ type: "notification", text, also: opts.also, fallbackTemplate: opts.fallbackTemplate });
   }
 
   async function sendApproval(text: string, opts: SendOptions = {}): Promise<boolean> {
@@ -139,5 +171,22 @@ export function createClient(options: GatewayClientOptions) {
     });
   }
 
-  return { sendNotification, sendApproval, sendPrompt, sendSelect, sendTemplate };
+  async function getMessageStatus(messageId: string): Promise<MessageStatus | null> {
+    const res = await fetch(`${options.baseUrl}/api/messages/${encodeURIComponent(messageId)}`, {
+      headers: { Authorization: `Bearer ${options.apiKey}` },
+    });
+    if (res.status === 404 && typeof (await res.json().catch(() => null))?.error === "string") return null;
+    if (!res.ok) throw new GatewayError(`status lookup failed (${res.status})`);
+    return res.json();
+  }
+
+  async function getWindow(): Promise<WindowState> {
+    const res = await fetch(`${options.baseUrl}/api/window`, {
+      headers: { Authorization: `Bearer ${options.apiKey}` },
+    });
+    if (!res.ok) throw new GatewayError(`window lookup failed (${res.status})`);
+    return res.json();
+  }
+
+  return { sendNotification, sendApproval, sendPrompt, sendSelect, sendTemplate, getMessageStatus, getWindow };
 }

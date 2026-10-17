@@ -1,16 +1,41 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { getRequiredEnv } from "@/lib/env";
 import { verifySignature } from "@/lib/signature";
-import { resolveCorrelationId, markReplied, getPendingRecord } from "@/lib/correlation";
+import {
+  resolveCorrelationId,
+  markReplied,
+  getPendingRecord,
+  pinInboundDecision,
+} from "@/lib/correlation";
 import { deliverCallback } from "@/lib/callback";
+import { recordMessageStatus } from "@/lib/message-status";
+import { recordInbound } from "@/lib/window";
 
 export const runtime = "nodejs";
+
+interface WebhookChange {
+  value?: { metadata?: { phone_number_id?: string }; messages?: unknown; statuses?: unknown };
+}
 
 interface WhatsAppStatus {
   id?: string;
   status?: string;
   recipient_id?: string;
+  timestamp?: string;
   errors?: { code?: number; title?: string; message?: string; error_data?: { details?: string } }[];
+}
+
+const WINDOW_OPENING_TYPES = new Set([
+  "text", "image", "audio", "video", "document", "sticker", "location", "contacts", "interactive", "button",
+]);
+
+function secondsToMs(timestamp: unknown): number | undefined {
+  const seconds = Number(timestamp);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
+}
+
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
 }
 
 // Meta accepts a send (200 + message id) before it knows whether delivery will
@@ -26,6 +51,74 @@ function logStatus(status: WhatsAppStatus) {
     return;
   }
   console.log(`WhatsApp status update: ${summary}`);
+}
+
+async function handleStatus(status: WhatsAppStatus) {
+  logStatus(status);
+  if (!status.id || !status.status) return;
+
+  const error = status.errors?.[0];
+  await recordMessageStatus({
+    messageId: status.id,
+    status: status.status,
+    timestamp: secondsToMs(status.timestamp),
+    recipient: status.recipient_id,
+    error: error && { code: error.code, title: error.title, details: error.error_data?.details ?? error.message },
+  });
+}
+
+async function recordWindowOpening(message: Record<string, any>) {
+  const opensWindow = message.type === undefined || WINDOW_OPENING_TYPES.has(message.type);
+  if (opensWindow && message.from === getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER")) {
+    await recordInbound(secondsToMs(message.timestamp) ?? Date.now());
+  }
+}
+
+async function resolveReply(message: Record<string, any>) {
+  const from: string = message.from ?? "";
+  const inboundId: string | undefined = message.id;
+
+  const buttonId: string | undefined = message.interactive?.button_reply?.id;
+  const listReplyId: string | undefined = message.interactive?.list_reply?.id;
+  const contextMessageId: string | undefined = message.context?.id;
+  const replyText: string = message.interactive?.button_reply?.title ?? message.text?.body ?? "";
+
+  // Free text resolves the most recent pending prompt, so only text may do that.
+  if (!buttonId && !listReplyId && message.type !== undefined && message.type !== "text") {
+    console.log(`Ignoring non-text message with no matching reply (from=${from}, type=${message.type})`);
+    return;
+  }
+
+  const resolved = await resolveCorrelationId({ from, buttonId, listReplyId, contextMessageId });
+  // Free text is matched to "the most recent pending prompt", which a redelivery would resolve differently, so pin the first decision.
+  const pinnable = inboundId && from === getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER");
+  const candidate = resolved?.correlationId ?? null;
+  const correlationId = pinnable ? await pinInboundDecision(inboundId, candidate) : candidate;
+  if (!correlationId) {
+    console.log(`Webhook ack without action - no matching pending reply (from=${from}, type=${message.type})`);
+    return;
+  }
+
+  let value: string;
+  if (resolved?.selectedIndex !== undefined) {
+    const pending = await getPendingRecord(correlationId);
+    value = pending?.options?.[resolved.selectedIndex] ?? "";
+  } else {
+    value = resolved?.decision ?? replyText;
+  }
+
+  const updated = await markReplied(correlationId, value);
+  if (!updated) {
+    console.log("Webhook ack without action - no matching pending reply");
+    return;
+  }
+
+  const { callbackUrl } = updated;
+  if (callbackUrl) {
+    // After the response: a slow consumer must not make Meta retry the webhook.
+    after(() => deliverCallback(callbackUrl, { correlationId, value }));
+  }
+  console.log(`Reply resolved: correlationId=${correlationId}, value=${value}`);
 }
 
 export async function GET(request: Request): Promise<Response> {
@@ -50,50 +143,20 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const event = JSON.parse(rawBody);
-  const payload = event?.entry?.[0]?.changes?.[0]?.value;
-  const message = payload?.messages?.[0];
 
-  for (const status of (payload?.statuses ?? []) as WhatsAppStatus[]) {
-    logStatus(status);
-  }
+  const changes = asArray<{ changes?: unknown }>(event?.entry)
+    .flatMap((entry) => asArray<WebhookChange>(entry?.changes))
+    .filter((change) => {
+      const phoneId = change?.value?.metadata?.phone_number_id;
+      return !phoneId || phoneId === getRequiredEnv("WHATSAPP_PHONE_ID");
+    });
+  const messages = changes.flatMap((change) => asArray<Record<string, any>>(change?.value?.messages));
+  const statuses = changes.flatMap((change) => asArray<WhatsAppStatus>(change?.value?.statuses));
 
-  if (!message) {
-    // Status updates (logged above) and other non-message events land here
-    // too - nothing to correlate, just ack.
-    return NextResponse.json({ ok: true });
-  }
-
-  const from: string = message.from ?? "";
-  const buttonId: string | undefined = message.interactive?.button_reply?.id;
-  const listReplyId: string | undefined = message.interactive?.list_reply?.id;
-  const contextMessageId: string | undefined = message.context?.id;
-  const replyText: string = message.interactive?.button_reply?.title ?? message.text?.body ?? "";
-
-  const resolved = await resolveCorrelationId({ from, buttonId, listReplyId, contextMessageId });
-  if (!resolved) {
-    console.log(`Webhook ack without action - no matching pending reply (from=${from}, type=${message.type})`);
-    return NextResponse.json({ ok: true });
-  }
-
-  let value: string;
-  if (resolved.selectedIndex !== undefined) {
-    const pending = await getPendingRecord(resolved.correlationId);
-    value = pending?.options?.[resolved.selectedIndex] ?? "";
-  } else {
-    value = resolved.decision ?? replyText;
-  }
-
-  const updated = await markReplied(resolved.correlationId, value);
-  if (!updated) {
-    console.log("Webhook ack without action - no matching pending reply");
-    return NextResponse.json({ ok: true });
-  }
-
-  console.log(`Reply resolved: correlationId=${resolved.correlationId}, value=${value}`);
-
-  if (updated.callbackUrl) {
-    await deliverCallback(updated.callbackUrl, { correlationId: resolved.correlationId, value });
-  }
+  // Replies first: a failing telemetry write must not hold up resolving one, but still fails the request so Meta retries.
+  for (const message of messages) await resolveReply(message);
+  for (const message of messages) await recordWindowOpening(message);
+  for (const status of statuses) await handleStatus(status);
 
   return NextResponse.json({ ok: true });
 }

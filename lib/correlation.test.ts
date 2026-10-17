@@ -2,14 +2,38 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const store = new Map<string, unknown>();
 const zsets = new Map<string, Map<string, number>>();
+let failNextPlainSet = false;
+let failNextZrem = false;
+let loseNextNxResponse = false;
+let failNextZremrange = false;
+let zrangeCalls = 0;
+const stuckMembers = new Set<string>();
+const expiries = new Map<string, number>();
 
 vi.mock("@/lib/redis", () => ({
   redis: {
     async get(key: string) {
       return store.has(key) ? store.get(key) : null;
     },
-    async set(key: string, value: unknown) {
+    async set(key: string, value: unknown, opts?: { nx?: boolean; ex?: number }) {
+      if (opts?.nx) {
+        if (store.has(key)) return null;
+        if (loseNextNxResponse) {
+          loseNextNxResponse = false;
+          store.set(key, value);
+          if (opts.ex) expiries.set(key, opts.ex);
+          return null;
+        }
+      } else if (failNextPlainSet) {
+        failNextPlainSet = false;
+        throw new Error("redis write failed");
+      }
       store.set(key, value);
+      if (opts?.ex) expiries.set(key, opts.ex);
+      return "OK";
+    },
+    async del(key: string) {
+      return store.delete(key) ? 1 : 0;
     },
     async zadd(key: string, entry: { score: number; member: string }) {
       const set = zsets.get(key) ?? new Map<string, number>();
@@ -17,6 +41,7 @@ vi.mock("@/lib/redis", () => ({
       zsets.set(key, set);
     },
     async zrange(key: string, start: number, stop: number) {
+      if (++zrangeCalls > 100) throw new Error("zrange called too many times");
       const set = zsets.get(key);
       if (!set) return [];
       const sorted = [...set.entries()].sort((a, b) => a[1] - b[1]);
@@ -24,9 +49,17 @@ vi.mock("@/lib/redis", () => ({
       return sorted.slice(normalize(start), normalize(stop) + 1).map(([member]) => member);
     },
     async zrem(key: string, member: string) {
-      zsets.get(key)?.delete(member);
+      if (failNextZrem) {
+        failNextZrem = false;
+        throw new Error("redis zrem failed");
+      }
+      if (!stuckMembers.has(member)) zsets.get(key)?.delete(member);
     },
     async zremrangebyscore(key: string, min: number, max: number) {
+      if (failNextZremrange) {
+        failNextZremrange = false;
+        throw new Error("redis zremrangebyscore failed");
+      }
       const set = zsets.get(key);
       if (!set) return 0;
       let removed = 0;
@@ -45,6 +78,7 @@ import {
   createPendingRecord,
   getPendingRecord,
   markReplied,
+  pinInboundDecision,
   resolveCorrelationId,
 } from "@/lib/correlation";
 
@@ -53,6 +87,13 @@ const RECIPIENT = "15551234567";
 beforeEach(() => {
   store.clear();
   zsets.clear();
+  failNextPlainSet = false;
+  failNextZrem = false;
+  loseNextNxResponse = false;
+  failNextZremrange = false;
+  zrangeCalls = 0;
+  stuckMembers.clear();
+  expiries.clear();
   process.env.WHATSAPP_RECIPIENT_NUMBER = RECIPIENT;
 });
 
@@ -179,6 +220,107 @@ describe("markReplied", () => {
     });
     await markReplied("abc123", "hello");
     expect(await markReplied("abc123", "hello again")).toBeNull();
+  });
+
+  it("lets exactly one of two concurrent deliveries win (Meta retries a webhook it thinks failed)", async () => {
+    await createPendingRecord("abc123", {
+      type: "prompt",
+      whatsappMessageId: "wamid.1",
+      createdAt: Date.now(),
+    });
+    const results = await Promise.allSettled([markReplied("abc123", "hello"), markReplied("abc123", "hello")]);
+    const winners = results.filter((r) => r.status === "fulfilled" && r.value !== null);
+    expect(winners).toHaveLength(1);
+  });
+
+  it("releases its claim when storing the reply fails, so Meta's retry can still resolve it", async () => {
+    await createPendingRecord("abc123", {
+      type: "prompt",
+      whatsappMessageId: "wamid.1",
+      createdAt: Date.now(),
+    });
+    failNextPlainSet = true;
+    await expect(markReplied("abc123", "hello")).rejects.toThrow("redis write failed");
+    const retried = await markReplied("abc123", "hello");
+    expect(retried?.status).toBe("replied");
+  });
+});
+
+describe("markReplied claim and index cleanup", () => {
+  it("fails instead of dropping the reply when another attempt holds the claim but never stored it, so Meta retries", async () => {
+    await createPendingRecord("abc123", { type: "prompt", whatsappMessageId: "wamid.1", createdAt: Date.now() });
+    store.set("replied:wamid.1", 1);
+    await expect(markReplied("abc123", "hello")).rejects.toThrow(/retry/);
+
+    store.delete("replied:wamid.1");
+    expect((await markReplied("abc123", "hello"))?.status).toBe("replied");
+  });
+
+  it("still creates the record when pruning the prompt index fails, since the reply will resolve normally", async () => {
+    failNextZremrange = true;
+    await expect(
+      createPendingRecord("abc123", { type: "prompt", whatsappMessageId: "wamid.1", createdAt: Date.now() })
+    ).resolves.toBeUndefined();
+    expect((await getPendingRecord("abc123"))?.status).toBe("pending");
+  });
+
+  it("lets a reused correlation id be answered again after an earlier send with that id was answered", async () => {
+    await createPendingRecord("deploy-42", { type: "approval", whatsappMessageId: "wamid.1", createdAt: Date.now() });
+    await markReplied("deploy-42", "approve");
+    await createPendingRecord("deploy-42", { type: "approval", whatsappMessageId: "wamid.2", createdAt: Date.now() });
+    expect((await markReplied("deploy-42", "deny"))?.value).toBe("deny");
+  });
+
+  it("holds its claim only briefly, so a crash between claiming and storing can't block Meta's retry for a day", async () => {
+    await createPendingRecord("abc123", { type: "prompt", whatsappMessageId: "wamid.1", createdAt: Date.now() });
+    await markReplied("abc123", "hello");
+    const claims = [...expiries].filter(([key]) => key.startsWith("replied:"));
+    expect(claims).not.toHaveLength(0);
+    expect(claims.every(([, ex]) => ex <= 120)).toBe(true);
+  });
+
+  it("still returns the stored reply when removing it from the prompt index fails", async () => {
+    await createPendingRecord("abc123", { type: "prompt", whatsappMessageId: "wamid.1", createdAt: Date.now() });
+    failNextZrem = true;
+    expect((await markReplied("abc123", "hello"))?.status).toBe("replied");
+  });
+
+  it("gives up on index entries it can't remove instead of looping forever", async () => {
+    for (let i = 0; i < 30; i++) {
+      zsets.set("pending-prompts", (zsets.get("pending-prompts") ?? new Map()).set(`stuck-${i}`, i));
+      stuckMembers.add(`stuck-${i}`);
+    }
+    expect(await resolveCorrelationId({ from: RECIPIENT })).toBeNull();
+  });
+});
+
+describe("pinInboundDecision", () => {
+  it("pins the first decision for an inbound message and returns it to every later caller", async () => {
+    expect(await pinInboundDecision("wamid.in1", "p2")).toBe("p2");
+    expect(await pinInboundDecision("wamid.in1", "p1")).toBe("p2");
+  });
+
+  it("pins 'no match' too, so a redelivered message can't later match a prompt created after it", async () => {
+    expect(await pinInboundDecision("wamid.in1", null)).toBeNull();
+    expect(await pinInboundDecision("wamid.in1", "p-new")).toBeNull();
+  });
+
+  it("keeps decisions for different inbound messages independent", async () => {
+    await pinInboundDecision("wamid.in1", "p2");
+    expect(await pinInboundDecision("wamid.in2", "p1")).toBe("p1");
+  });
+
+  it("remembers a decision for days, long enough to outlast Meta's redelivery retries", async () => {
+    await pinInboundDecision("wamid.in1", "p2");
+    expect(expiries.get("answered:wamid.in1")).toBeGreaterThanOrEqual(60 * 60 * 24 * 2);
+  });
+});
+
+describe("markReplied when the claim write is retried by the client", () => {
+  it("recognises its own claim when the first attempt was applied but its response was lost", async () => {
+    await createPendingRecord("a1", { type: "approval", whatsappMessageId: "wamid.a1", createdAt: Date.now() });
+    loseNextNxResponse = true;
+    expect((await markReplied("a1", "approve"))?.status).toBe("replied");
   });
 });
 

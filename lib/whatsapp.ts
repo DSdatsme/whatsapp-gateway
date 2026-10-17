@@ -1,6 +1,7 @@
 import { getRequiredEnv } from "@/lib/env";
 
 const GRAPH_API_VERSION = "v21.0";
+const REQUEST_TIMEOUT_MS = 15_000;
 
 export class WhatsAppSendError extends Error {
   constructor(message: string) {
@@ -30,9 +31,10 @@ export async function sendWhatsAppMessage(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
-    const data = (await res.json()) as GraphApiResponse;
+    const data = (await res.json().catch(() => null)) as GraphApiResponse | null;
     if (!res.ok) {
       const error = new WhatsAppSendError(data?.error?.message ?? `Graph API error (${res.status})`);
       console.error(
@@ -41,12 +43,22 @@ export async function sendWhatsAppMessage(
       );
       throw error;
     }
-    return { messageId: data.messages![0].id };
+    const messageId = data?.messages?.[0]?.id;
+    if (!messageId) {
+      throw new WhatsAppSendError("Graph API accepted the request but returned no message id; the message may have been sent");
+    }
+    return { messageId };
   } catch (err) {
     if (err instanceof WhatsAppSendError) {
       throw err;
     }
-    const error = new WhatsAppSendError(err instanceof Error ? err.message : "Unknown error");
+    const message =
+      err instanceof Error && err.name === "TimeoutError"
+        ? `Graph API request timed out after ${REQUEST_TIMEOUT_MS / 1000}s; the message may or may not have been sent`
+        : err instanceof Error
+          ? err.message
+          : "Unknown error";
+    const error = new WhatsAppSendError(message);
     console.error(`WhatsApp send failed: ${error.message}`);
     throw error;
   }

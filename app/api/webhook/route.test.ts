@@ -5,22 +5,50 @@ vi.mock("@/lib/correlation", () => ({
   resolveCorrelationId: vi.fn(),
   markReplied: vi.fn(),
   getPendingRecord: vi.fn(),
+  pinInboundDecision: vi.fn(async (_id: string, candidate: string | null) => candidate),
 }));
 vi.mock("@/lib/callback", () => ({
   deliverCallback: vi.fn(async () => {}),
 }));
+vi.mock("@/lib/message-status", () => ({
+  recordMessageStatus: vi.fn(async () => {}),
+}));
+vi.mock("@/lib/window", () => ({
+  recordInbound: vi.fn(async () => {}),
+}));
+
+// after() needs a real request scope, so capture its tasks and run them with flushAfter().
+const afterTasks: Array<() => unknown> = [];
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return { ...actual, after: vi.fn((task: () => unknown) => void afterTasks.push(task)) };
+});
 
 import { GET, POST } from "@/app/api/webhook/route";
-import { resolveCorrelationId, markReplied, getPendingRecord } from "@/lib/correlation";
+import {
+  resolveCorrelationId,
+  markReplied,
+  getPendingRecord,
+  pinInboundDecision,
+} from "@/lib/correlation";
 import { deliverCallback } from "@/lib/callback";
+import { recordMessageStatus } from "@/lib/message-status";
+import { recordInbound } from "@/lib/window";
 
 const APP_SECRET = "test-app-secret";
 
 beforeEach(() => {
   process.env.WHATSAPP_APP_SECRET = APP_SECRET;
   process.env.WHATSAPP_VERIFY_TOKEN = "test-verify-token";
+  process.env.WHATSAPP_RECIPIENT_NUMBER = "15551234567";
+  process.env.WHATSAPP_PHONE_ID = "phone-1";
   vi.clearAllMocks();
+  afterTasks.length = 0;
 });
+
+async function flushAfter() {
+  await Promise.all(afterTasks.splice(0).map((task) => task()));
+}
 
 function signedRequest(body: unknown): Request {
   const raw = JSON.stringify(body);
@@ -106,10 +134,30 @@ describe("POST /api/webhook", () => {
       expect.objectContaining({ from: SENDER, buttonId: "approve:corr-1" })
     );
     expect(markReplied).toHaveBeenCalledWith("corr-1", "approve");
+
+    await flushAfter();
     expect(deliverCallback).toHaveBeenCalledWith("https://consumer.example/hook", {
       correlationId: "corr-1",
       value: "approve",
     });
+  });
+
+  it("responds to Meta before delivering the callback, so a slow consumer can't make Meta retry the webhook", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "corr-1", decision: "approve" });
+    vi.mocked(markReplied).mockResolvedValue({
+      status: "replied",
+      type: "approval",
+      callbackUrl: "https://consumer.example/hook",
+      whatsappMessageId: "wamid.1",
+      createdAt: 1,
+      value: "approve",
+      receivedAt: 2,
+    });
+
+    const res = await POST(signedRequest(BUTTON_REPLY_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(deliverCallback).not.toHaveBeenCalled();
+    expect(afterTasks).toHaveLength(1);
   });
 
   it("passes an empty sender through when the payload has no `from` field", async () => {
@@ -222,6 +270,78 @@ describe("POST /api/webhook", () => {
     logSpy.mockRestore();
   });
 
+  it("processes every message and status in a batched payload, not just the first", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    const batched = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  { from: SENDER, interactive: { button_reply: { id: "approve:a", title: "Approve" } } },
+                  { from: SENDER, interactive: { button_reply: { id: "deny:b", title: "Deny" } } },
+                ],
+                statuses: [{ id: "wamid.s1", status: "sent" }],
+              },
+            },
+          ],
+        },
+        {
+          changes: [
+            {
+              value: {
+                messages: [{ from: SENDER, interactive: { list_reply: { id: "c:0", title: "Red" } } }],
+                statuses: [{ id: "wamid.s2", status: "delivered" }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const res = await POST(signedRequest(batched));
+    expect(res.status).toBe(200);
+    expect(resolveCorrelationId).toHaveBeenCalledTimes(3);
+    expect(resolveCorrelationId).toHaveBeenCalledWith(expect.objectContaining({ buttonId: "approve:a" }));
+    expect(resolveCorrelationId).toHaveBeenCalledWith(expect.objectContaining({ buttonId: "deny:b" }));
+    expect(resolveCorrelationId).toHaveBeenCalledWith(expect.objectContaining({ listReplyId: "c:0" }));
+    expect(recordMessageStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not treat a non-text message (image, sticker, ...) as the answer to a pending prompt", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await POST(
+      signedRequest({
+        entry: [{ changes: [{ value: { messages: [{ from: SENDER, type: "image", image: { id: "media.1" } }] } }] }],
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(resolveCorrelationId).not.toHaveBeenCalled();
+    expect(markReplied).not.toHaveBeenCalled();
+    expect(loggedLine(logSpy, SENDER, "image")).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it("still resolves a plain text message through the fallback", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "corr-p" });
+    vi.mocked(markReplied).mockResolvedValue({
+      status: "replied",
+      type: "prompt",
+      whatsappMessageId: "wamid.p",
+      createdAt: 1,
+      value: "release-7",
+      receivedAt: 2,
+    });
+    const res = await POST(
+      signedRequest({
+        entry: [{ changes: [{ value: { messages: [{ from: SENDER, type: "text", text: { body: "release-7" } }] } }] }],
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(markReplied).toHaveBeenCalledWith("corr-p", "release-7");
+  });
+
   it("logs the sender and message type when an inbound message matches no pending reply", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.mocked(resolveCorrelationId).mockResolvedValue(null);
@@ -233,5 +353,295 @@ describe("POST /api/webhook", () => {
     expect(res.status).toBe(200);
     expect(loggedLine(logSpy, SENDER, "text")).toBe(true);
     logSpy.mockRestore();
+  });
+});
+
+describe("POST /api/webhook delivery status and window tracking", () => {
+  it("persists a delivery status with Meta's timestamp converted from seconds to ms", async () => {
+    const res = await POST(
+      signedRequest(
+        statusPayload({ id: "wamid.ok", status: "delivered", recipient_id: SENDER, timestamp: "1700000000" })
+      )
+    );
+    expect(res.status).toBe(200);
+    expect(recordMessageStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "wamid.ok",
+        status: "delivered",
+        recipient: SENDER,
+        timestamp: 1_700_000_000_000,
+      })
+    );
+  });
+
+  it("persists Meta's error code, title and details for a failed delivery", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await POST(
+      signedRequest(
+        statusPayload({
+          id: "wamid.failed",
+          status: "failed",
+          recipient_id: SENDER,
+          errors: [
+            {
+              code: 131047,
+              title: "Re-engagement message",
+              error_data: { details: "Message failed to send because more than 24 hours have passed" },
+            },
+          ],
+        })
+      )
+    );
+    expect(recordMessageStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "wamid.failed",
+        status: "failed",
+        error: {
+          code: 131047,
+          title: "Re-engagement message",
+          details: "Message failed to send because more than 24 hours have passed",
+        },
+      })
+    );
+  });
+
+  it("fails the request when persisting a delivery status fails, so Meta retries it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(recordMessageStatus).mockRejectedValueOnce(new Error("redis down"));
+    await expect(POST(signedRequest(statusPayload({ id: "wamid.s", status: "failed" })))).rejects.toThrow("redis down");
+  });
+
+  it("records an inbound message from the recipient so the 24h window can be tracked", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    await POST(
+      signedRequest({
+        entry: [
+          {
+            changes: [
+              { value: { messages: [{ from: SENDER, type: "text", timestamp: "1700000000", text: { body: "hi" } }] } },
+            ],
+          },
+        ],
+      })
+    );
+    expect(recordInbound).toHaveBeenCalledWith(1_700_000_000_000);
+  });
+
+  it("records a non-text inbound message too, since any message from the recipient reopens the window", async () => {
+    await POST(
+      signedRequest({
+        entry: [
+          {
+            changes: [
+              { value: { messages: [{ from: SENDER, type: "image", timestamp: "1700000000", image: { id: "m" } }] } },
+            ],
+          },
+        ],
+      })
+    );
+    expect(recordInbound).toHaveBeenCalledWith(1_700_000_000_000);
+  });
+
+  it("does not record a message from someone other than the recipient", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    await POST(
+      signedRequest({
+        entry: [
+          {
+            changes: [
+              { value: { messages: [{ from: "19995551234", type: "text", timestamp: "1700000000", text: { body: "hi" } }] } },
+            ],
+          },
+        ],
+      })
+    );
+    expect(recordInbound).not.toHaveBeenCalled();
+  });
+
+  it("fails the request when recording the inbound message fails, so Meta retries it", async () => {
+    vi.mocked(recordInbound).mockRejectedValueOnce(new Error("redis down"));
+    await expect(POST(signedRequest(BUTTON_REPLY_PAYLOAD))).rejects.toThrow("redis down");
+  });
+});
+
+describe("POST /api/webhook scoping and window-opening types", () => {
+  const inboundText = { from: SENDER, type: "text", timestamp: "1700000000", text: { body: "hi" } };
+
+  it("ignores events addressed to a different business phone number on the same app", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    const res = await POST(
+      signedRequest({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  metadata: { phone_number_id: "someone-elses-number" },
+                  messages: [inboundText],
+                  statuses: [{ id: "wamid.other", status: "delivered" }],
+                },
+              },
+            ],
+          },
+        ],
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(recordInbound).not.toHaveBeenCalled();
+    expect(recordMessageStatus).not.toHaveBeenCalled();
+    expect(resolveCorrelationId).not.toHaveBeenCalled();
+  });
+
+  it("processes events addressed to the configured business phone number", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    await POST(
+      signedRequest({
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  metadata: { phone_number_id: "phone-1" },
+                  messages: [inboundText],
+                  statuses: [{ id: "wamid.mine", status: "delivered" }],
+                },
+              },
+            ],
+          },
+        ],
+      })
+    );
+    expect(recordInbound).toHaveBeenCalledTimes(1);
+    expect(recordMessageStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["text", "image", "audio", "interactive", "button"])("a %s message from the recipient reopens the window", async (type) => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    await POST(
+      signedRequest({
+        entry: [{ changes: [{ value: { messages: [{ from: SENDER, type, timestamp: "1700000000" }] } }] }],
+      })
+    );
+    expect(recordInbound).toHaveBeenCalledWith(1_700_000_000_000);
+  });
+
+  it.each(["reaction", "unsupported", "system", "request_welcome"])(
+    "a %s event is not counted as the recipient opening the window",
+    async (type) => {
+      await POST(
+        signedRequest({
+          entry: [{ changes: [{ value: { messages: [{ from: SENDER, type, timestamp: "1700000000" }] } }] }],
+        })
+      );
+      expect(recordInbound).not.toHaveBeenCalled();
+    }
+  );
+});
+
+describe("POST /api/webhook ordering", () => {
+  const resolvedReply = () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "corr-1", decision: "approve" });
+    vi.mocked(markReplied).mockResolvedValue({
+      status: "replied",
+      type: "approval",
+      whatsappMessageId: "wamid.1",
+      createdAt: 1,
+      value: "approve",
+      receivedAt: 2,
+    });
+  };
+
+  it("resolves the reply before recording the inbound time, and still fails so Meta retries if that write fails", async () => {
+    resolvedReply();
+    vi.mocked(recordInbound).mockRejectedValueOnce(new Error("redis down"));
+    await expect(POST(signedRequest(BUTTON_REPLY_PAYLOAD))).rejects.toThrow("redis down");
+    expect(markReplied).toHaveBeenCalledWith("corr-1", "approve");
+  });
+
+  it("resolves every reply in the payload before persisting statuses, and still fails if a status write fails", async () => {
+    resolvedReply();
+    vi.mocked(recordMessageStatus).mockRejectedValueOnce(new Error("redis down"));
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                statuses: [{ id: "wamid.s", status: "delivered" }],
+                messages: [{ from: SENDER, interactive: { button_reply: { id: "approve:corr-1", title: "Approve" } } }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    await expect(POST(signedRequest(payload))).rejects.toThrow("redis down");
+    expect(markReplied).toHaveBeenCalledWith("corr-1", "approve");
+  });
+});
+
+describe("POST /api/webhook pinned inbound decisions", () => {
+  const textMessage = { id: "wamid.in1", from: SENDER, type: "text", text: { body: "release-7" } };
+  const payload = (message: Record<string, unknown> = textMessage) => ({
+    entry: [{ changes: [{ value: { messages: [message] } }] }],
+  });
+  const replied = (value: string) => ({
+    status: "replied" as const,
+    type: "prompt" as const,
+    whatsappMessageId: "wamid.p",
+    createdAt: 1,
+    value,
+    receivedAt: 2,
+    callbackUrl: "https://consumer.example/hook",
+  });
+
+  it("pins the candidate for a message from the recipient before applying it", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "p2" });
+    vi.mocked(markReplied).mockResolvedValue(replied("release-7"));
+    await POST(signedRequest(payload()));
+    expect(pinInboundDecision).toHaveBeenCalledWith("wamid.in1", "p2");
+  });
+
+  it("applies the pinned decision instead of the freshly resolved one, so a redelivery can't answer another prompt", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "p1" });
+    vi.mocked(pinInboundDecision).mockResolvedValueOnce("p2");
+    vi.mocked(markReplied).mockResolvedValue(replied("release-7"));
+    await POST(signedRequest(payload()));
+    expect(markReplied).toHaveBeenCalledWith("p2", "release-7");
+    expect(markReplied).not.toHaveBeenCalledWith("p1", expect.anything());
+  });
+
+  it("acks without applying anything when the pinned decision was 'no match'", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "p-new" });
+    vi.mocked(pinInboundDecision).mockResolvedValueOnce(null);
+    const res = await POST(signedRequest(payload()));
+    expect(res.status).toBe(200);
+    expect(markReplied).not.toHaveBeenCalled();
+  });
+
+  it("pins 'no match' as well, so a redelivered chat message can't answer a prompt created later", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    await POST(signedRequest(payload()));
+    expect(pinInboundDecision).toHaveBeenCalledWith("wamid.in1", null);
+  });
+
+  it("does not pin messages from anyone but the recipient", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    await POST(signedRequest(payload({ ...textMessage, from: "19995551234" })));
+    expect(pinInboundDecision).not.toHaveBeenCalled();
+  });
+
+  it("does not pin a message that has no id", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    await POST(signedRequest(payload({ from: SENDER, type: "text", text: { body: "hi" } })));
+    expect(pinInboundDecision).not.toHaveBeenCalled();
+  });
+
+  it("schedules the callback as soon as the reply is stored, before later writes that can fail", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "p2" });
+    vi.mocked(markReplied).mockResolvedValue(replied("release-7"));
+    vi.mocked(recordInbound).mockRejectedValueOnce(new Error("redis down"));
+    await expect(POST(signedRequest(payload({ ...textMessage, timestamp: "1700000000" })))).rejects.toThrow("redis down");
+    expect(afterTasks).toHaveLength(1);
   });
 });
