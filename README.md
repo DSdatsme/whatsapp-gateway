@@ -86,6 +86,13 @@ const environment = await gateway.sendSelect("Which environment?", ["staging", "
 
 // Guaranteed delivery regardless of session state, via a pre-approved template
 await gateway.sendTemplate("test_utility_basic", "en", ["backup-service", "OK"]);
+
+// Free text when the 24h window is open, the template when it isn't
+const { messageId } = await gateway.sendNotification("Backup finished.", {
+  fallbackTemplate: { name: "test_utility_basic", language: "en", params: ["backup-service", "Backup finished."] },
+});
+const status = await gateway.getMessageStatus(messageId!); // null until Meta reports one
+const window = await gateway.getWindow();
 ```
 
 `sendApproval`, `sendPrompt`, and `sendSelect` all accept an optional options object as their last argument:
@@ -181,7 +188,9 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 
 - `POST /api/send` — send a `notification`, `approval`, `prompt`, `select`, or `template` message.
 - `GET|POST /api/webhook` — Meta's webhook verification handshake and inbound message/reply receiver (Meta calls this, you don't).
-- `GET /api/replies/:correlationId` — poll for the reply to a previously sent message.
+- `GET /api/replies/:correlationId` — poll for the reply to a previously sent `approval`, `prompt` or `select` message.
+- `GET /api/messages/:messageId` — the delivery status Meta reported for a sent message (`sent`, `delivered`, `read` or `failed`, with Meta's error code for failures).
+- `GET /api/window` — whether WhatsApp's 24-hour window is open right now, i.e. whether free-form text will be delivered.
 
 ### `POST /api/send` request shape
 
@@ -190,16 +199,17 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 | `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`, `"select"`, `"template"`. |
 | `text` | unless type is `template` | The message body sent to the recipient. |
 | `also` | no | Sends an extra copy of this message to a second number, in addition to (never instead of) `WHATSAPP_RECIPIENT_NUMBER`. Digits-only E.164 (no leading `+`), e.g. `"919876543210"`. Replies from this second recipient aren't correlated — only the primary recipient's reply resolves `GET /api/replies/:correlationId`. See the 24-hour window caveat below. |
-| `correlationId` | no | Caller-supplied id used to correlate replies. Auto-generated (a UUID) if omitted. |
+| `correlationId` | no | Caller-supplied id used to correlate replies. For `approval`, `prompt` and `select` it must be 1-128 characters: letters, digits, `.`, `_`, `:` or `-`; other types don't use it. Auto-generated (a UUID) if omitted. |
 | `approveLabel` | no | Button label for `approval` messages (defaults to `"Approve"`). |
 | `denyLabel` | no | Button label for `approval` messages (defaults to `"Deny"`). |
 | `options` | `select` only | Array of 2-10 plain-text option labels. The reply's `value` is the exact label the recipient picked. |
 | `templateName` | `template` only | Name of an Approved template in WhatsApp Manager. |
 | `templateLanguage` | `template` only | The template's language code (e.g. `en`, `en_US`) — must match exactly. |
 | `templateParams` | no | Array of positional values for the template's `{{1}}`, `{{2}}`, ... placeholders. Defaults to none. |
-| `callbackUrl` | no | If set, the reply is POSTed to this URL instead of (or in addition to) being available via `GET /api/replies/:correlationId`. |
+| `fallbackTemplate` | no | `notification` only: `{ "name", "language", "params"? }`. Sent instead of `text` when the 24-hour window is closed, closes within two minutes, or can't be read, so the message arrives either way; the response then has `"viaTemplate": true`. An `also` copy always goes out as the template, since only your own window is tracked. The window is learned from your inbound messages, so right after a fresh deploy it counts as closed until you message the number once. |
+| `callbackUrl` | no | An http(s) URL without credentials, at most 2048 characters. If set, the reply is POSTed to it instead of (or in addition to) being available via `GET /api/replies/:correlationId`. Redirects aren't followed, each attempt waits up to 15 seconds, and delivery is best-effort: a slow consumer can receive the same `correlationId` twice (dedupe on it), and a delivery lost to a storage failure is not retried, so poll `GET /api/replies/:correlationId` if you can't afford to miss one. |
 
-Response is `{ "correlationId": "..." }` on success (200), or `{ "error": "..." }` on failure (400 for invalid input, 502 if the Graph API call fails).
+Response is `{ "correlationId": "...", "messageId": "wamid...." }` on success (200), plus `viaTemplate` and `alsoError` when they apply. Failures are `{ "error": "..." }`: 400 for invalid input, 502 if the Graph API call fails. For `approval`, `prompt` and `select`, a 500 with `"sent": true` means the message went out but its reply tracking couldn't be stored, so retrying would send a duplicate.
 
 ### `GET /api/replies/:correlationId` response shape
 
@@ -207,7 +217,13 @@ Response is `{ "correlationId": "..." }` on success (200), or `{ "error": "..." 
 |---|---|
 | Still waiting | `{ "status": "pending" }` |
 | Answered | `{ "status": "replied", "value": "...", "receivedAt": <epoch-ms> }` — `value` is `"approve"`/`"deny"` for `approval`, free text for `prompt`, or the picked label for `select`. |
-| Unknown or expired id | `404 { "error": "not found" }` (pending records have a 24h TTL) |
+| Unknown or expired id | `404 { "error": "not found" }` (pending records have a 24h TTL; `notification` and `template` sends never create one) |
+
+### `GET /api/messages/:messageId` and `GET /api/window`
+
+`/api/messages/:messageId` returns `{ "messageId", "status", "updatedAt", "recipient"?, "error"? }`. Meta reports statuses a few seconds after a send, so a 404 straight away can just mean "not yet"; they're kept for 24 hours. A `failed` status carries `error.code` — `131047` means the 24-hour window was closed.
+
+`/api/window` returns `{ "open", "lastInboundAt", "expiresAt" }` (epoch-ms, `null` until you've messaged the number).
 
 ### Environment variables
 
@@ -238,20 +254,20 @@ npm test
 Graph API returns `200` with a real message ID as soon as it *accepts* a message — that does not mean it was actually delivered. Two common reasons a message silently never arrives, neither of which is a bug in this gateway:
 
 1. **Using a test/sandbox WhatsApp number.** The free test number Meta provisions in **WhatsApp → API Setup** can only message phone numbers explicitly added and OTP-verified as test recipients. Add the recipient there (**API Setup → "To" field → Manage phone number list**) before expecting any delivery.
-2. **The 24-hour customer service window is closed.** WhatsApp only allows free-form messages (which is everything this gateway sends — `notification`, `approval`, `prompt`, and `select` are all free-form, not templates) to a recipient who has messaged the business number within the last 24 hours. If the recipient hasn't messaged first (or it's been >24h since they last did), Graph API still returns 200, but the message is dropped. Have the recipient send any message to the business number to open the window, then retry. A pre-approved **template** message is the only message type exempt from this rule — useful for confirming your token/phone ID/recipient setup is otherwise correct without needing an open session. This applies to `also` recipients too: a one-off second recipient who has never messaged the business number won't receive a `notification`/`approval`/`prompt`/`select` send, only a `template` one.
+2. **The 24-hour customer service window is closed.** WhatsApp only allows free-form messages (which is everything this gateway sends — `notification`, `approval`, `prompt`, and `select` are all free-form, not templates) to a recipient who has messaged the business number within the last 24 hours. If the recipient hasn't messaged first (or it's been >24h since they last did), Graph API still returns 200, but the message is dropped. Have the recipient send any message to the business number to open the window, then retry. `GET /api/window` shows whether it's open, `GET /api/messages/:messageId` shows what Meta reported for a given send, and a `fallbackTemplate` on a `notification` makes it arrive either way. A pre-approved **template** message is the only message type exempt from this rule — useful for confirming your token/phone ID/recipient setup is otherwise correct without needing an open session. This applies to `also` recipients too: a one-off second recipient who has never messaged the business number won't receive a `notification`/`approval`/`prompt`/`select` send, only a `template` one.
 
 ### Sends arrive but replies never reach `/api/webhook`
 
 Registering the callback URL and subscribing to the `messages` field (both covered in Quickstart) configure your **app's** webhook — but that's not enough on its own. The WhatsApp Business Account (WABA) that owns your phone number also has to be explicitly told to route its events through *this* app, which is a separate step Meta doesn't surface clearly in the dashboard:
 
 ```bash
-curl -X POST "https://graph.facebook.com/v21.0/<WABA_ID>/subscribed_apps?access_token=<WHATSAPP_TOKEN>"
+curl -X POST "https://graph.facebook.com/v21.0/<WABA_ID>/subscribed_apps" -H "Authorization: Bearer <WHATSAPP_TOKEN>"
 ```
 
 If you're not sure whether this is already done, check first:
 
 ```bash
-curl "https://graph.facebook.com/v21.0/<WABA_ID>/subscribed_apps?access_token=<WHATSAPP_TOKEN>"
+curl "https://graph.facebook.com/v21.0/<WABA_ID>/subscribed_apps" -H "Authorization: Bearer <WHATSAPP_TOKEN>"
 ```
 
 If the response doesn't list your app, that's why button taps and replies never show up in `POST /api/webhook` even though sending works fine. New WABAs can come pre-subscribed to an unrelated default app instead of yours — subscribing your app doesn't remove others, so this is safe to run even if you're unsure.
@@ -262,6 +278,7 @@ To find your WABA ID: open **Meta App Dashboard → your app → WhatsApp → AP
 
 - Resolving a free-text reply with no explicit reply-to (i.e. not a swipe-reply) falls back to the single most-recently-sent pending prompt. If two `prompt` sends are outstanding at the same time and the user doesn't swipe-reply to a specific message, the gateway can't disambiguate which one the reply is for.
 - Swipe-replying to a `notification` or `approval` message (rather than a `prompt`) isn't correlated via `context.id`, since only `prompt`-type sends are indexed by WhatsApp message id.
+- Any plain text message you send the business number while a `prompt` is pending is taken as its answer, including a "hi" sent just to reopen the 24-hour window. Images, stickers and other non-text messages are ignored for this purpose.
 - The client library is Node-only; other languages use the raw HTTP API directly (see [Using it from your code](#using-it-from-your-code)).
 - `select` supports 2-10 options in a single flat list (no sections or per-option descriptions) — call `/api/send` directly if you need richer list formatting than a flat array of labels.
 

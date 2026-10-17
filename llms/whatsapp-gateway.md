@@ -34,7 +34,25 @@ curl -X POST "$GATEWAY_BASE_URL/api/send" \
   -d '{"type": "notification", "text": "Nightly job finished."}'
 ```
 
-Response: `{"correlationId": "<uuid>"}`, HTTP 200. Nothing more to do — no reply is expected or tracked meaningfully for this type.
+Response: `{"correlationId": "<uuid>", "messageId": "wamid...."}`, HTTP 200. Nothing more to do — no reply is expected or tracked for this type. Keep `messageId` if you want to check later whether it was actually delivered (see "Checking delivery and the 24-hour window" below).
+
+A plain `notification` is free-form text, which WhatsApp only delivers when the human has messaged the business number in the last 24 hours — otherwise it is dropped silently. To make a notification arrive either way, add a `fallbackTemplate`:
+
+```bash
+curl -X POST "$GATEWAY_BASE_URL/api/send" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "notification",
+    "text": "Nightly job finished.",
+    "fallbackTemplate": {"name": "test_utility_basic", "language": "en", "params": ["nightly-job", "Nightly job finished."]}
+  }'
+```
+
+- If the 24-hour window is open the `text` is sent as-is; if it is closed, closes within two minutes, or the gateway can't tell, the template is sent instead and the response includes `"viaTemplate": true`.
+- The gateway learns the window state from the human's inbound messages, so right after a fresh deploy it treats the window as closed — and sends the template — until they message the number once.
+- `fallbackTemplate` is only valid on `notification` (anything else gets a 400). The template rules from Operation 5 apply: it must be Approved, and `params` can't contain newlines or tabs.
+- An `also` copy always goes out as the template, since only the primary recipient's window is tracked.
 
 ## Operation 2: approval (yes/no, human taps a button)
 
@@ -49,7 +67,7 @@ curl -X POST "$GATEWAY_BASE_URL/api/send" \
   }'
 ```
 
-- `correlationId` is optional — omit it and the gateway generates one, returned in the response. Supply your own (e.g. a job id) if you want a predictable, human-meaningful id.
+- `correlationId` is optional — omit it and the gateway generates one, returned in the response. If you supply one it must be 1-128 characters of letters, digits, `.`, `_`, `:` or `-` (`notification` and `template` don't use it, so they don't check it). Supply your own (e.g. a job id) if you want a predictable, human-meaningful id.
 - Optional `approveLabel` / `denyLabel` (default `"Approve"` / `"Deny"`) override the button text.
 - Poll for the result (see below). The reply `value` is the literal string `"approve"` or `"deny"`.
 
@@ -69,6 +87,8 @@ curl -X POST "$GATEWAY_BASE_URL/api/send" \
 Poll for the result the same way. The reply `value` is whatever free text the human sent.
 
 **Important:** only one `prompt` should be outstanding at a time. If a second `prompt` is sent before the first is answered, and the human replies without explicitly swipe-replying to a specific message, the gateway cannot tell which question the reply is answering — it resolves to whichever `prompt` was sent most recently. Send one, wait for its reply, then send the next.
+
+Any plain **text** message the human sends while a `prompt` is pending is taken as its answer — including an unrelated one such as a "hi" sent just to reopen the 24-hour window. Images, stickers and other non-text messages are ignored for this purpose.
 
 ## Operation 4: select (pick one of several options)
 
@@ -132,7 +152,22 @@ curl "$GATEWAY_BASE_URL/api/replies/deploy-42" \
 Responses:
 - `{"status": "pending"}` — no reply yet. Wait and retry (5-10 second intervals are reasonable; a human needs time to see a phone notification and respond — don't poll faster than every couple of seconds, and be prepared to wait several minutes, not seconds).
 - `{"status": "replied", "value": "approve", "receivedAt": <epoch-ms>}` — done. `value` is `"approve"`/`"deny"` for approvals, free text for prompts, or the picked option's label for `select`.
-- `404 {"error": "not found"}` — unknown `correlationId`, or its record expired (pending records have a 24h TTL).
+- `404 {"error": "not found"}` — unknown `correlationId`, or its record expired (pending records have a 24h TTL). Only `approval`, `prompt` and `select` sends create a record, so a `notification` or `template` correlationId always 404s here.
+
+If `POST /api/send` returns **500** with `"sent": true` for one of those three types, the message *did* go out but the gateway couldn't store the record needed to match its reply, so polling will never succeed. The body includes the `messageId` and `correlationId`. Don't retry blindly — that sends a duplicate; tell the operator instead.
+
+## Checking delivery and the 24-hour window
+
+```bash
+# Did a specific message actually arrive? (use the messageId from the send response)
+curl "$GATEWAY_BASE_URL/api/messages/wamid.HBgL..." -H "Authorization: Bearer $GATEWAY_API_KEY"
+
+# Can free-form text be delivered right now, and until when?
+curl "$GATEWAY_BASE_URL/api/window" -H "Authorization: Bearer $GATEWAY_API_KEY"
+```
+
+- `GET /api/messages/:messageId` → `{"messageId", "status": "sent"|"delivered"|"read"|"failed", "updatedAt": <epoch-ms>, "recipient"?, "error"?}`. For `failed`, `error` carries Meta's `code`, `title` and `details` — code `131047` means the 24-hour window was closed. WhatsApp reports statuses a few seconds after a send, so a 404 straight after sending can just mean "not yet"; ids are kept for 24 hours.
+- `GET /api/window` → `{"open": boolean, "lastInboundAt": <epoch-ms>|null, "expiresAt": <epoch-ms>|null}`. `open` is false when the human has never messaged the number or last did more than 24 hours ago.
 
 ## Recipe: block on human approval before taking an action
 
@@ -172,11 +207,13 @@ const environment = await gateway.sendSelect("Which environment?", ["staging", "
 await gateway.sendTemplate("test_utility_basic", "en", ["backup-service", "OK"]);
 ```
 
-`sendApproval`/`sendPrompt`/`sendSelect` each accept an optional `{ correlationId, pollIntervalMs, timeoutMs, also }` object as a last argument to override the id, the poll timing, or CC a second recipient (defaults: poll every 5s, give up after 10 minutes and throw `GatewayError`). `sendNotification(text, { also })` and `sendTemplate(name, lang, params, { correlationId, also })` accept the same `also`.
+`sendApproval`/`sendPrompt`/`sendSelect` each accept an optional `{ correlationId, pollIntervalMs, timeoutMs, also }` object as a last argument to override the id, the poll timing, or CC a second recipient (defaults: poll every 5s, give up after 10 minutes and throw `GatewayError`). `sendNotification(text, { also, fallbackTemplate })` and `sendTemplate(name, lang, params, { correlationId, also })` accept the same `also`.
+
+`sendNotification` resolves to `{ correlationId, messageId, viaTemplate? }`. Two more methods mirror the endpoints above: `gateway.getMessageStatus(messageId)` (resolves to the status, or `null` if none has arrived yet) and `gateway.getWindow()`.
 
 ## Things that will trip you up if you don't know about them
 
-- **A 200 response from `/api/send` does not mean the message was delivered**, only that the gateway accepted the request and forwarded it to WhatsApp. If a human reports never seeing a message, the cause is almost always on the WhatsApp/Meta side (session window closed, recipient not verified for a test number) — see the main README's Troubleshooting section. Don't assume your integration code is broken; check with the gateway operator first.
+- **A 200 response from `/api/send` does not mean the message was delivered**, only that the gateway accepted the request and forwarded it to WhatsApp. Look the `messageId` up with `GET /api/messages/:messageId` to see what actually happened. If a human reports never seeing a message, the cause is almost always on the WhatsApp/Meta side (session window closed, recipient not verified for a test number) — see the main README's Troubleshooting section. Don't assume your integration code is broken; check with the gateway operator first.
 - **Timeouts are normal, not errors.** A human might not see their phone for a while. Don't treat a `pending` status as failure — keep polling within a generous timeout (minutes, not seconds) before giving up.
 - **One correlationId, one question.** Don't reuse a `correlationId` for a new question — each `POST /api/send` should get a fresh one (or let the gateway generate it) so replies don't cross-resolve.
 - **Auth failures return 401**, not a silently-ignored request — if you get 401, your `GATEWAY_API_KEY` is wrong, not a transient issue worth retrying blindly.
