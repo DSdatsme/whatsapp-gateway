@@ -174,3 +174,13 @@ describe("webhook messages from a watched number, with the real correlation code
     expect(deliverCallback).not.toHaveBeenCalled();
   });
 });
+
+describe("webhook with the real correlation code when the recipient number is configured with a +", () => {
+  it("still answers the pending prompt from a text sent by that number", async () => {
+    process.env.WHATSAPP_RECIPIENT_NUMBER = `+${SENDER}`;
+    await twoPendingPrompts();
+    expect((await delivery("release-7")).status).toBe(200);
+    expect((await getPendingRecord("p2"))?.value).toBe("release-7");
+    expect((await getPendingRecord("p1"))?.status).toBe("pending");
+  });
+});

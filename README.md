@@ -239,7 +239,7 @@ Only the recipient's own messages are kept, at most 200 of them for 7 days, with
 |---|---|
 | `WHATSAPP_TOKEN` | Graph API access token |
 | `WHATSAPP_PHONE_ID` | WhatsApp Business phone number ID |
-| `WHATSAPP_RECIPIENT_NUMBER` | Fixed recipient number for all sends; always honored, optionally joined by a per-request `also` recipient |
+| `WHATSAPP_RECIPIENT_NUMBER` | Fixed recipient number for all sends; always honored, optionally joined by a per-request `also` recipient. Include the country code; a `+`, spaces, dashes and brackets are fine (incoming messages are matched on the digits alone), and a value that isn't a real phone number is rejected |
 | `WHATSAPP_APP_SECRET` | Used to verify `X-Hub-Signature-256` on inbound webhooks |
 | `WHATSAPP_VERIFY_TOKEN` | Used for the webhook verification handshake (you make this up) |
 | `GATEWAY_API_KEY` | Shared-secret bearer token consumers use to call `/api/send` and `/api/replies/:id` (you make this up) |

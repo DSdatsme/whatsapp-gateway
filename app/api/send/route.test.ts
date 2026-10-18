@@ -581,3 +581,18 @@ describe("POST /api/send copy to an 'also' recipient", () => {
     expect(watchNumber).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/send with the recipient number configured with a +", () => {
+  it("still sends to the number exactly as configured, since that is what already delivers", async () => {
+    process.env.WHATSAPP_RECIPIENT_NUMBER = "+15551234567";
+    await POST(request({ type: "notification", text: "hi" }));
+    expect(buildNotificationPayload).toHaveBeenCalledWith("+15551234567", "hi");
+  });
+
+  it("doesn't send a duplicate copy when 'also' is the recipient written as plain digits", async () => {
+    process.env.WHATSAPP_RECIPIENT_NUMBER = "+15551234567";
+    await POST(request({ type: "notification", text: "hi", also: "15551234567" }));
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(1);
+    expect(watchNumber).not.toHaveBeenCalled();
+  });
+});

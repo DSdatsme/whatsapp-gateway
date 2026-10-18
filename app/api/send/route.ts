@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { requireApiKey } from "@/lib/auth";
 import { createPendingRecord } from "@/lib/correlation";
-import { getRequiredEnv } from "@/lib/env";
+import { getRecipientNumber, getRequiredEnv } from "@/lib/env";
 import { getWindowState } from "@/lib/window";
 import { watchNumber } from "@/lib/watch";
 import {
@@ -195,7 +195,7 @@ export async function POST(request: Request): Promise<Response> {
   let alsoNumber: string | undefined;
   let alsoWatchError: string | undefined;
   let alsoError: string | undefined;
-  if (body.also && body.also !== recipient) {
+  if (body.also && body.also !== getRecipientNumber()) {
     alsoWatchError = await watchOrReport(body.also);
     try {
       const copy = await sendWhatsAppMessage(payloadFor(body.also));

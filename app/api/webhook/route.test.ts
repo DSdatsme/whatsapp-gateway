@@ -795,3 +795,36 @@ describe("POST /api/webhook messages from a watched number", () => {
     expect(vi.mocked(addInboxMessage).mock.calls[0]).toHaveLength(1);
   });
 });
+
+describe("POST /api/webhook with the recipient number configured with a +", () => {
+  beforeEach(() => {
+    process.env.WHATSAPP_RECIPIENT_NUMBER = "+15551234567";
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "c1" });
+    vi.mocked(markReplied).mockResolvedValue(null);
+  });
+
+  const deliver = () =>
+    POST(
+      signedRequest({
+        entry: [
+          {
+            changes: [
+              { value: { messages: [{ id: "wamid.in1", from: "15551234567", type: "text", timestamp: "1700000000", text: { body: "hi" } }] } },
+            ],
+          },
+        ],
+      })
+    );
+
+  it("treats a message from that number as the recipient's: opens the window and stores it in their own inbox", async () => {
+    await deliver();
+    expect(recordInbound).toHaveBeenCalledWith(1_700_000_000_000);
+    expect(addInboxMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(addInboxMessage).mock.calls[0]).toHaveLength(1);
+  });
+
+  it("pins the reply decision for that sender", async () => {
+    await deliver();
+    expect(pinInboundDecision).toHaveBeenCalledWith("wamid.in1", "c1");
+  });
+});

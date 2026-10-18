@@ -1,5 +1,5 @@
 import { after, NextResponse } from "next/server";
-import { getRequiredEnv } from "@/lib/env";
+import { getRecipientNumber, getRequiredEnv } from "@/lib/env";
 import { verifySignature } from "@/lib/signature";
 import {
   resolveCorrelationId,
@@ -72,7 +72,7 @@ async function handleStatus(status: WhatsAppStatus) {
 }
 
 async function recordInboundMessage(message: Record<string, any>) {
-  const fromRecipient = message.from === getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER");
+  const fromRecipient = message.from === getRecipientNumber();
   if (!fromRecipient && !(message.from && (await isWatched(message.from)))) return;
 
   const at = secondsToMs(message.timestamp) ?? Date.now();
@@ -116,7 +116,7 @@ async function resolveReply(message: Record<string, any>) {
 
   const resolved = await resolveCorrelationId({ from, buttonId, listReplyId, contextMessageId });
   // Free text is matched to "the most recent pending prompt", which a redelivery would resolve differently, so pin the first decision.
-  const pinnable = inboundId && from === getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER");
+  const pinnable = inboundId && from === getRecipientNumber();
   const candidate = resolved?.correlationId ?? null;
   const correlationId = pinnable ? await pinInboundDecision(inboundId, candidate) : candidate;
   if (!correlationId) {

@@ -208,6 +208,16 @@ describe("resolveCorrelationId", () => {
   });
 });
 
+describe("resolveCorrelationId when the recipient number is configured with a +", () => {
+  it("still recognises the recipient, since WhatsApp reports the sender as plain digits", async () => {
+    process.env.WHATSAPP_RECIPIENT_NUMBER = "+15551234567";
+    expect(await resolveCorrelationId({ from: "15551234567", buttonId: "approve:abc123" })).toEqual({
+      correlationId: "abc123",
+      decision: "approve",
+    });
+  });
+});
+
 describe("markReplied", () => {
   it("marks a pending record as replied and removes it from the prompt index", async () => {
     await createPendingRecord("abc123", {
