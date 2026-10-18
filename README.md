@@ -192,7 +192,7 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 - `GET /api/replies/:correlationId` — poll for the reply to a previously sent `approval`, `prompt` or `select` message.
 - `GET /api/messages/:messageId` — the delivery status Meta reported for a sent message (`sent`, `delivered`, `read` or `failed`, with Meta's error code for failures).
 - `GET /api/window` — whether WhatsApp's 24-hour window is open right now, i.e. whether free-form text will be delivered.
-- `GET /api/inbox` — the recent messages the recipient sent to the business number (text, reactions, captions), oldest first by arrival. Use `?since=<epoch-ms>&limit=<1-200>` to narrow it.
+- `GET /api/inbox` — the recent messages the recipient sent to the business number (text, reactions, captions), oldest first by arrival. Use `?since=<epoch-ms>&limit=<1-200>` to narrow it, and `?from=<number>` for a copy recipient's messages instead.
 
 ### `POST /api/send` request shape
 
@@ -200,7 +200,7 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 |---|---|---|
 | `type` | yes | One of `"notification"`, `"approval"`, `"prompt"`, `"select"`, `"template"`. |
 | `text` | unless type is `template` | The message body sent to the recipient. |
-| `also` | no | Sends an extra copy of this message to a second number, in addition to (never instead of) `WHATSAPP_RECIPIENT_NUMBER`. Digits-only E.164 (no leading `+`), e.g. `"919876543210"`. Replies from this second recipient aren't correlated — only the primary recipient's reply resolves `GET /api/replies/:correlationId`. See the 24-hour window caveat below. |
+| `also` | no | Sends an extra copy of this message to a second number, in addition to (never instead of) `WHATSAPP_RECIPIENT_NUMBER`. Digits-only E.164 (no leading `+`), e.g. `"919876543210"`. Replies from this second recipient aren't correlated — only the primary recipient's reply resolves `GET /api/replies/:correlationId`. The response includes `alsoMessageId` for the copy, so its delivery can be checked at `GET /api/messages/:messageId`, and `alsoNumber`, the WhatsApp id Meta resolved the number to. For the next 7 days that number's messages to the business number are kept and readable at `GET /api/inbox?from=<alsoNumber>`. See the 24-hour window caveat below. |
 | `correlationId` | no | Caller-supplied id used to correlate replies. For `approval`, `prompt` and `select` it must be 1-128 characters: letters, digits, `.`, `_`, `:` or `-`; other types don't use it. Auto-generated (a UUID) if omitted. |
 | `approveLabel` | no | Button label for `approval` messages (defaults to `"Approve"`). |
 | `denyLabel` | no | Button label for `approval` messages (defaults to `"Deny"`). |
@@ -211,7 +211,7 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 | `fallbackTemplate` | no | `notification` only: `{ "name", "language", "params"? }`. Sent instead of `text` when the 24-hour window is closed, closes within two minutes, or can't be read, so the message arrives either way; the response then has `"viaTemplate": true`. An `also` copy always goes out as the template, since only your own window is tracked. The window is learned from your inbound messages, so right after a fresh deploy it counts as closed until you message the number once. |
 | `callbackUrl` | no | An http(s) URL without credentials, at most 2048 characters. If set, the reply is POSTed to it instead of (or in addition to) being available via `GET /api/replies/:correlationId`. Redirects aren't followed, each attempt waits up to 15 seconds, and delivery is best-effort: a slow consumer can receive the same `correlationId` twice (dedupe on it), and a delivery lost to a storage failure is not retried, so poll `GET /api/replies/:correlationId` if you can't afford to miss one. |
 
-Response is `{ "correlationId": "...", "messageId": "wamid...." }` on success (200), plus `viaTemplate` and `alsoError` when they apply. Failures are `{ "error": "..." }`: 400 for invalid input, 502 if the Graph API call fails. For `approval`, `prompt` and `select`, a 500 with `"sent": true` means the message went out but its reply tracking couldn't be stored, so retrying would send a duplicate.
+Response is `{ "correlationId": "...", "messageId": "wamid...." }` on success (200), plus `viaTemplate`, `alsoMessageId`, `alsoNumber`, `alsoWatchError` (the copy was sent but its replies may not be captured) and `alsoError` when they apply. Failures are `{ "error": "..." }`: 400 for invalid input, 502 if the Graph API call fails. For `approval`, `prompt` and `select`, a 500 with `"sent": true` means the message went out but its reply tracking couldn't be stored, so retrying would send a duplicate.
 
 ### `GET /api/replies/:correlationId` response shape
 
@@ -225,7 +225,7 @@ Response is `{ "correlationId": "...", "messageId": "wamid...." }` on success (2
 
 Returns `{ "messages": [{ "id", "type", "text"?, "timestamp", "contextMessageId"? }] }`, oldest first, from the messages the recipient has sent the business number: plain text, button and list replies by title, template quick-reply taps by their text, reactions as their emoji (a removed reaction isn't stored), and media by type with the caption if there is one. `contextMessageId` is set when the recipient swipe-replied to, or reacted to, one of the gateway's messages. This is how you see a reply to a plain `notification` or `template`, which have no `correlationId` to match against.
 
-Only the recipient's own messages are kept, at most 200 of them for 7 days, with text cut to 1000 characters. Other senders' messages are never stored.
+Only the recipient's own messages are kept, at most 200 of them for 7 days, with text cut to 1000 characters. Messages from anyone else are never stored, with one exception: a number that was used as `also` in the last 7 days has its messages kept under its own inbox, with its own 200-message cap, so they can never mix with or crowd out yours. Ask for them with `?from=<number>` (digits only, as returned in `alsoNumber`); the default response is always only the recipient's. They never affect your 24-hour window or answer an approval, prompt or select.
 
 ### `GET /api/messages/:messageId` and `GET /api/window`
 
