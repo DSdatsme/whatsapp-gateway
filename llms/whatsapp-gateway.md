@@ -167,6 +167,7 @@ curl "$GATEWAY_BASE_URL/api/window" -H "Authorization: Bearer $GATEWAY_API_KEY"
 ```
 
 - `GET /api/messages/:messageId` → `{"messageId", "status": "sent"|"delivered"|"read"|"failed", "updatedAt": <epoch-ms>, "recipient"?, "error"?}`. For `failed`, `error` carries Meta's `code`, `title` and `details` — code `131047` means the 24-hour window was closed. WhatsApp reports statuses a few seconds after a send, so a 404 straight after sending can just mean "not yet"; ids are kept for 24 hours.
+- `GET /api/inbox?since=<epoch-ms>&limit=<1-200>` → `{"messages": [{"id", "type", "text"?, "timestamp", "contextMessageId"?}]}`, oldest first by arrival: what the human has sent the business number (text, quick-reply taps, reactions as their emoji, media by type). Use it to see a reply to a `notification` or `template`, which have no `correlationId`. `contextMessageId` is set when they swipe-replied or reacted to one of your messages; otherwise a message is only known to have arrived after yours. Only the human's own messages are kept (200 max, 7 days).
 - `GET /api/window` → `{"open": boolean, "lastInboundAt": <epoch-ms>|null, "expiresAt": <epoch-ms>|null}`. `open` is false when the human has never messaged the number or last did more than 24 hours ago.
 
 ## Recipe: block on human approval before taking an action
@@ -209,7 +210,7 @@ await gateway.sendTemplate("test_utility_basic", "en", ["backup-service", "OK"])
 
 `sendApproval`/`sendPrompt`/`sendSelect` each accept an optional `{ correlationId, pollIntervalMs, timeoutMs, also }` object as a last argument to override the id, the poll timing, or CC a second recipient (defaults: poll every 5s, give up after 10 minutes and throw `GatewayError`). `sendNotification(text, { also, fallbackTemplate })` and `sendTemplate(name, lang, params, { correlationId, also })` accept the same `also`.
 
-`sendNotification` resolves to `{ correlationId, messageId, viaTemplate? }`. Two more methods mirror the endpoints above: `gateway.getMessageStatus(messageId)` (resolves to the status, or `null` if none has arrived yet) and `gateway.getWindow()`.
+`sendNotification` resolves to `{ correlationId, messageId, viaTemplate? }`. Three more methods mirror the endpoints above: `gateway.getMessageStatus(messageId)` (resolves to the status, or `null` if none has arrived yet), `gateway.getWindow()` and `gateway.getInbox({ since, limit })`.
 
 ## Things that will trip you up if you don't know about them
 

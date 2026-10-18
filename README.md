@@ -93,6 +93,7 @@ const { messageId } = await gateway.sendNotification("Backup finished.", {
 });
 const status = await gateway.getMessageStatus(messageId!); // null until Meta reports one
 const window = await gateway.getWindow();
+const replies = await gateway.getInbox({ since: Date.now() - 60 * 60 * 1000 }); // what you sent the number in the last hour
 ```
 
 `sendApproval`, `sendPrompt`, and `sendSelect` all accept an optional options object as their last argument:
@@ -191,6 +192,7 @@ The same shape works from a shell script with `curl`, a cron job, a CI pipeline 
 - `GET /api/replies/:correlationId` — poll for the reply to a previously sent `approval`, `prompt` or `select` message.
 - `GET /api/messages/:messageId` — the delivery status Meta reported for a sent message (`sent`, `delivered`, `read` or `failed`, with Meta's error code for failures).
 - `GET /api/window` — whether WhatsApp's 24-hour window is open right now, i.e. whether free-form text will be delivered.
+- `GET /api/inbox` — the recent messages the recipient sent to the business number (text, reactions, captions), oldest first by arrival. Use `?since=<epoch-ms>&limit=<1-200>` to narrow it.
 
 ### `POST /api/send` request shape
 
@@ -218,6 +220,12 @@ Response is `{ "correlationId": "...", "messageId": "wamid...." }` on success (2
 | Still waiting | `{ "status": "pending" }` |
 | Answered | `{ "status": "replied", "value": "...", "receivedAt": <epoch-ms> }` — `value` is `"approve"`/`"deny"` for `approval`, free text for `prompt`, or the picked label for `select`. |
 | Unknown or expired id | `404 { "error": "not found" }` (pending records have a 24h TTL; `notification` and `template` sends never create one) |
+
+### `GET /api/inbox`
+
+Returns `{ "messages": [{ "id", "type", "text"?, "timestamp", "contextMessageId"? }] }`, oldest first, from the messages the recipient has sent the business number: plain text, button and list replies by title, template quick-reply taps by their text, reactions as their emoji (a removed reaction isn't stored), and media by type with the caption if there is one. `contextMessageId` is set when the recipient swipe-replied to, or reacted to, one of the gateway's messages. This is how you see a reply to a plain `notification` or `template`, which have no `correlationId` to match against.
+
+Only the recipient's own messages are kept, at most 200 of them for 7 days, with text cut to 1000 characters. Other senders' messages are never stored.
 
 ### `GET /api/messages/:messageId` and `GET /api/window`
 
