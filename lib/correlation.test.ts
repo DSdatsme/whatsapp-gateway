@@ -188,6 +188,15 @@ describe("resolveCorrelationId", () => {
     expect(resolved).toBeNull();
   });
 
+  it("returns null for a list reply from a sender other than the configured recipient", async () => {
+    expect(await resolveCorrelationId({ from: "19995551234", listReplyId: "abc123:1" })).toBeNull();
+  });
+
+  it("returns null for a swipe-reply to a pending prompt from a sender other than the configured recipient", async () => {
+    await createPendingRecord("abc123", { type: "prompt", whatsappMessageId: "wamid.1", createdAt: Date.now() });
+    expect(await resolveCorrelationId({ from: "19995551234", contextMessageId: "wamid.1" })).toBeNull();
+  });
+
   it("does not let an outside sender hijack the most-recent-pending-prompt fallback", async () => {
     await createPendingRecord("real-prompt", {
       type: "prompt",

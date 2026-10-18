@@ -11,6 +11,7 @@ import { deliverCallback } from "@/lib/callback";
 import { recordMessageStatus } from "@/lib/message-status";
 import { recordInbound } from "@/lib/window";
 import { addInboxMessage } from "@/lib/inbox";
+import { isWatched } from "@/lib/watch";
 
 export const runtime = "nodejs";
 
@@ -70,11 +71,12 @@ async function handleStatus(status: WhatsAppStatus) {
   });
 }
 
-async function recordFromRecipient(message: Record<string, any>) {
-  if (message.from !== getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER")) return;
+async function recordInboundMessage(message: Record<string, any>) {
+  const fromRecipient = message.from === getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER");
+  if (!fromRecipient && !(message.from && (await isWatched(message.from)))) return;
 
   const at = secondsToMs(message.timestamp) ?? Date.now();
-  if (message.type === undefined || WINDOW_OPENING_TYPES.has(message.type)) await recordInbound(at);
+  if (fromRecipient && (message.type === undefined || WINDOW_OPENING_TYPES.has(message.type))) await recordInbound(at);
   if (!message.id || (message.type === "reaction" && !message.reaction?.emoji)) return;
 
   const text: string | undefined =
@@ -87,13 +89,14 @@ async function recordFromRecipient(message: Record<string, any>) {
     message.video?.caption ??
     message.document?.caption;
   const contextMessageId: string | undefined = message.context?.id ?? message.reaction?.message_id;
-  await addInboxMessage({
+  const entry = {
     id: message.id,
     type: message.type ?? "unknown",
     ...(text ? { text: text.slice(0, MAX_INBOX_TEXT_LENGTH) } : {}),
     timestamp: at,
     ...(contextMessageId ? { contextMessageId } : {}),
-  });
+  };
+  await (fromRecipient ? addInboxMessage(entry) : addInboxMessage(entry, message.from));
 }
 
 async function resolveReply(message: Record<string, any>) {
@@ -177,7 +180,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // Replies first: a failing telemetry write must not hold up resolving one, but still fails the request so Meta retries.
   for (const message of messages) await resolveReply(message);
-  for (const message of messages) await recordFromRecipient(message);
+  for (const message of messages) await recordInboundMessage(message);
   for (const status of statuses) await handleStatus(status);
 
   return NextResponse.json({ ok: true });

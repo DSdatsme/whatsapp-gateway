@@ -290,3 +290,23 @@ describe("getInbox", () => {
     await expect(client.getInbox()).rejects.toThrow(/401/);
   });
 });
+
+describe("getInbox for a second number", () => {
+  it("asks for that number's messages", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ messages: [] }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    await client.getInbox({ from: "919876543210" });
+    expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example/api/inbox?from=919876543210");
+  });
+});
+
+describe("sendNotification with a copy", () => {
+  it("returns the message id of the copy", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ correlationId: "c1", messageId: "wamid.1", alsoMessageId: "wamid.2" }),
+    }) as unknown as typeof fetch;
+    const result = await client.sendNotification("hi", { also: "919876543210" });
+    expect(result.alsoMessageId).toBe("wamid.2");
+  });
+});

@@ -39,6 +39,17 @@ describe("GET /api/inbox", () => {
     expect(listInboxMessages).toHaveBeenCalledWith({ since: 1_700_000_000_000, limit: 5 });
   });
 
+  it("returns a watched number's messages when asked for that number", async () => {
+    await GET(request("?from=919876543210"));
+    expect(listInboxMessages).toHaveBeenCalledWith({ since: 0, limit: 50, from: "919876543210" });
+  });
+
+  it.each([["from=abc"], ["from=123"], ["from=%2B919876543210"]])("rejects an invalid number (%s) with a 400", async (query) => {
+    const res = await GET(request(`?${query}`));
+    expect(res.status).toBe(400);
+    expect(listInboxMessages).not.toHaveBeenCalled();
+  });
+
   it.each([["since=abc"], ["since=-5"], ["since=1.5"], ["limit=0"], ["limit=201"], ["limit=x"]])(
     "rejects an invalid query (%s) with a 400",
     async (query) => {

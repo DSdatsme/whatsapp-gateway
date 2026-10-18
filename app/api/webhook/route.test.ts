@@ -19,6 +19,9 @@ vi.mock("@/lib/window", () => ({
 vi.mock("@/lib/inbox", () => ({
   addInboxMessage: vi.fn(async () => {}),
 }));
+vi.mock("@/lib/watch", () => ({
+  isWatched: vi.fn(async () => false),
+}));
 
 // after() needs a real request scope, so capture its tasks and run them with flushAfter().
 const afterTasks: Array<() => unknown> = [];
@@ -38,6 +41,7 @@ import { deliverCallback } from "@/lib/callback";
 import { recordMessageStatus } from "@/lib/message-status";
 import { recordInbound } from "@/lib/window";
 import { addInboxMessage } from "@/lib/inbox";
+import { isWatched } from "@/lib/watch";
 
 const APP_SECRET = "test-app-secret";
 
@@ -739,5 +743,55 @@ describe("POST /api/webhook inbox", () => {
     vi.mocked(addInboxMessage).mockRejectedValueOnce(new Error("redis down"));
     await expect(deliver({ ...base, type: "text", text: { body: "yes" } })).rejects.toThrow("redis down");
     expect(markReplied).toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/webhook messages from a watched number", () => {
+  const OTHER = "919876543210";
+  const deliver = (message: Record<string, unknown>) =>
+    POST(signedRequest({ entry: [{ changes: [{ value: { messages: [message] } }] }] }));
+  const fromOther = { id: "wamid.in9", from: OTHER, type: "text", timestamp: "1700000000", text: { body: "got it, thanks" } };
+
+  beforeEach(() => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+    vi.mocked(isWatched).mockImplementation(async (number) => number === OTHER);
+  });
+
+  it("stores the message under its sender, not in the recipient's own inbox", async () => {
+    await deliver(fromOther);
+    expect(addInboxMessage).toHaveBeenCalledWith(
+      { id: "wamid.in9", type: "text", text: "got it, thanks", timestamp: 1_700_000_000_000 },
+      OTHER
+    );
+  });
+
+  it("keeps which of our messages a tap or swipe-reply answers", async () => {
+    await deliver({ ...fromOther, type: "button", text: undefined, button: { text: "Yes" }, context: { id: "wamid.copy" } });
+    expect(addInboxMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Yes", contextMessageId: "wamid.copy" }),
+      OTHER
+    );
+  });
+
+  it("does not store messages from a number that isn't watched", async () => {
+    await deliver({ ...fromOther, from: "919999999999" });
+    expect(addInboxMessage).not.toHaveBeenCalled();
+  });
+
+  it("leaves the recipient's 24h window alone", async () => {
+    await deliver(fromOther);
+    expect(recordInbound).not.toHaveBeenCalled();
+  });
+
+  it("never lets it answer a pending prompt or approval", async () => {
+    await deliver(fromOther);
+    expect(pinInboundDecision).not.toHaveBeenCalled();
+    expect(markReplied).not.toHaveBeenCalled();
+  });
+
+  it("stores the recipient's own messages in their own inbox", async () => {
+    await deliver({ ...fromOther, id: "wamid.in1", from: SENDER });
+    expect(addInboxMessage).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(addInboxMessage).mock.calls[0]).toHaveLength(1);
   });
 });

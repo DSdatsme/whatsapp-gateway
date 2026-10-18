@@ -29,6 +29,10 @@ vi.mock("@/lib/correlation", () => ({
   createPendingRecord: vi.fn(async () => {}),
 }));
 
+vi.mock("@/lib/watch", () => ({
+  watchNumber: vi.fn(async () => {}),
+}));
+
 vi.mock("@/lib/window", () => ({
   getWindowState: vi.fn(async () => ({ open: true, lastInboundAt: 1, expiresAt: Date.now() + 60 * 60 * 1000 })),
 }));
@@ -42,6 +46,7 @@ import {
 } from "@/lib/whatsapp";
 import { createPendingRecord } from "@/lib/correlation";
 import { getWindowState } from "@/lib/window";
+import { watchNumber } from "@/lib/watch";
 
 beforeEach(() => {
   process.env.GATEWAY_API_KEY = "test-key";
@@ -508,5 +513,71 @@ describe("POST /api/send window margin and empty ids", () => {
     const data = (await res.json()) as { correlationId?: string };
     expect(res.status).toBe(200);
     expect(data.correlationId).toMatch(/\S/);
+  });
+});
+
+describe("POST /api/send copy to an 'also' recipient", () => {
+  const ALSO = "919876543210";
+
+  it("returns the message id of the copy so its delivery can be checked", async () => {
+    vi.mocked(sendWhatsAppMessage)
+      .mockResolvedValueOnce({ messageId: "wamid.primary" })
+      .mockResolvedValueOnce({ messageId: "wamid.copy" });
+    const res = await POST(request({ type: "notification", text: "hi", also: ALSO }));
+    expect(await res.json()).toMatchObject({ messageId: "wamid.primary", alsoMessageId: "wamid.copy" });
+  });
+
+  it("returns no copy id when the copy failed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(sendWhatsAppMessage)
+      .mockResolvedValueOnce({ messageId: "wamid.primary" })
+      .mockRejectedValueOnce(new WhatsAppSendError("copy failed"));
+    const data = (await (await POST(request({ type: "notification", text: "hi", also: ALSO }))).json()) as Record<string, string>;
+    expect(data.alsoMessageId).toBeUndefined();
+    expect(data.alsoError).toMatch(/copy failed/);
+    vi.mocked(console.error).mockRestore();
+  });
+
+  it("starts watching that number for replies before the copy is sent", async () => {
+    await POST(request({ type: "notification", text: "hi", also: ALSO }));
+    expect(watchNumber).toHaveBeenCalledWith(ALSO);
+    const watched = vi.mocked(watchNumber).mock.invocationCallOrder[0];
+    const sends = vi.mocked(sendWhatsAppMessage).mock.invocationCallOrder;
+    expect(watched).toBeGreaterThan(sends[0]);
+    expect(watched).toBeLessThan(sends[1]);
+  });
+
+  it("still sends the copy when watching can't be started, and says its replies may be missed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(watchNumber).mockRejectedValueOnce(new Error("redis down"));
+    const res = await POST(request({ type: "notification", text: "hi", also: ALSO }));
+    expect(res.status).toBe(200);
+    expect(sendWhatsAppMessage).toHaveBeenCalledTimes(2);
+    expect(((await res.json()) as { alsoWatchError?: string }).alsoWatchError).toMatch(/replies may not be captured/);
+    vi.mocked(console.error).mockRestore();
+  });
+
+  it("returns the number as typed when Meta reports no different id", async () => {
+    const data = (await (await POST(request({ type: "notification", text: "hi", also: ALSO }))).json()) as Record<string, string>;
+    expect(data.alsoNumber).toBe(ALSO);
+    expect(data.alsoWatchError).toBeUndefined();
+  });
+
+  it("also watches the number Meta resolved when it differs from the one typed, and returns it", async () => {
+    vi.mocked(sendWhatsAppMessage)
+      .mockResolvedValueOnce({ messageId: "wamid.primary" })
+      .mockResolvedValueOnce({ messageId: "wamid.copy", recipientId: "5215512345678" });
+    const data = (await (await POST(request({ type: "notification", text: "hi", also: "525512345678" }))).json()) as Record<string, string>;
+    expect(watchNumber).toHaveBeenNthCalledWith(1, "525512345678");
+    expect(watchNumber).toHaveBeenNthCalledWith(2, "5215512345678");
+    expect(data.alsoNumber).toBe("5215512345678");
+  });
+
+  it.each([
+    ["there is no 'also'", { type: "notification", text: "hi" }],
+    ["'also' is the recipient themself", { type: "notification", text: "hi", also: "15551234567" }],
+  ])("watches nothing when %s", async (_why, body) => {
+    await POST(request(body));
+    expect(watchNumber).not.toHaveBeenCalled();
   });
 });

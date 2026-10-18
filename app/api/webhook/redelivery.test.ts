@@ -51,6 +51,7 @@ vi.mock("next/server", async (importOriginal) => ({
 
 import { POST } from "@/app/api/webhook/route";
 import { createPendingRecord, getPendingRecord } from "@/lib/correlation";
+import { watchNumber } from "@/lib/watch";
 import { deliverCallback } from "@/lib/callback";
 import { recordInbound } from "@/lib/window";
 
@@ -146,5 +147,30 @@ describe("webhook redelivery with the real correlation code", () => {
 
     expect((await getPendingRecord("p2"))?.value).toBe("first");
     expect((await getPendingRecord("p1"))?.value).toBe("second");
+  });
+});
+
+describe("webhook messages from a watched number, with the real correlation code", () => {
+  const OTHER = "919876543210";
+
+  function deliverFrom(from: string, message: Record<string, unknown>) {
+    const raw = JSON.stringify({
+      entry: [{ changes: [{ value: { messages: [{ from, timestamp: "1700000000", ...message }] } }] }],
+    });
+    const signature = `sha256=${createHmac("sha256", APP_SECRET).update(raw).digest("hex")}`;
+    return POST(new Request("https://gateway.example/api/webhook", { method: "POST", headers: { "x-hub-signature-256": signature }, body: raw }));
+  }
+
+  it("never lets them answer the owner's pending prompt, swipe-replied prompt or approval", async () => {
+    await twoPendingPrompts();
+    await createPendingRecord("a1", { type: "approval", whatsappMessageId: "wamid.a1", createdAt: Date.now(), callbackUrl: "https://c.example/a1" });
+    await watchNumber(OTHER);
+
+    await deliverFrom(OTHER, { id: "w1", type: "text", text: { body: "release-7" } });
+    await deliverFrom(OTHER, { id: "w2", type: "text", text: { body: "yes" }, context: { id: "wamid.p2" } });
+    await deliverFrom(OTHER, { id: "w3", type: "interactive", interactive: { button_reply: { id: "approve:a1", title: "Approve" } } });
+
+    for (const id of ["p1", "p2", "a1"]) expect((await getPendingRecord(id))?.status).toBe("pending");
+    expect(deliverCallback).not.toHaveBeenCalled();
   });
 });

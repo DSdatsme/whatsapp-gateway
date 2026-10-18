@@ -12,12 +12,13 @@ export class WhatsAppSendError extends Error {
 
 interface GraphApiResponse {
   messages?: { id: string }[];
+  contacts?: { wa_id?: string }[];
   error?: { message: string; code?: number; error_subcode?: number; fbtrace_id?: string };
 }
 
 export async function sendWhatsAppMessage(
   payload: Record<string, unknown>
-): Promise<{ messageId: string }> {
+): Promise<{ messageId: string; recipientId?: string }> {
   const phoneId = getRequiredEnv("WHATSAPP_PHONE_ID");
   const token = getRequiredEnv("WHATSAPP_TOKEN");
 
@@ -47,7 +48,7 @@ export async function sendWhatsAppMessage(
     if (!messageId) {
       throw new WhatsAppSendError("Graph API accepted the request but returned no message id; the message may have been sent");
     }
-    return { messageId };
+    return { messageId, recipientId: data?.contacts?.[0]?.wa_id };
   } catch (err) {
     if (err instanceof WhatsAppSendError) {
       throw err;

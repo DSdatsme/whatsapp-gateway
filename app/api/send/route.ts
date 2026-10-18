@@ -4,6 +4,7 @@ import { requireApiKey } from "@/lib/auth";
 import { createPendingRecord } from "@/lib/correlation";
 import { getRequiredEnv } from "@/lib/env";
 import { getWindowState } from "@/lib/window";
+import { watchNumber } from "@/lib/watch";
 import {
   buildApprovalPayload,
   buildNotificationPayload,
@@ -97,6 +98,15 @@ async function shouldUseFallbackTemplate(body: Partial<SendRequestBody>): Promis
   }
 }
 
+async function watchOrReport(number: string): Promise<string | undefined> {
+  try {
+    await watchNumber(number);
+  } catch (err) {
+    console.error(`Could not start watching the 'also' recipient for replies: ${describeError(err)}`);
+    return "could not start watching this number for replies, so its replies may not be captured";
+  }
+}
+
 export async function POST(request: Request): Promise<Response> {
   const authError = requireApiKey(request);
   if (authError) return authError;
@@ -181,16 +191,27 @@ export async function POST(request: Request): Promise<Response> {
     }
   }
 
+  let alsoMessageId: string | undefined;
+  let alsoNumber: string | undefined;
+  let alsoWatchError: string | undefined;
   let alsoError: string | undefined;
   if (body.also && body.also !== recipient) {
+    alsoWatchError = await watchOrReport(body.also);
     try {
-      await sendWhatsAppMessage(payloadFor(body.also));
+      const copy = await sendWhatsAppMessage(payloadFor(body.also));
+      alsoMessageId = copy.messageId;
+      alsoNumber = copy.recipientId ?? body.also;
+      if (alsoNumber !== body.also) alsoWatchError ??= await watchOrReport(alsoNumber);
     } catch (err) {
       alsoError = err instanceof WhatsAppSendError ? err.message : "unknown error sending to 'also' recipient";
       console.error(`Failed to send copy to 'also' recipient ${body.also}: ${alsoError}`);
     }
   }
-  const alsoField = alsoError ? { alsoError } : {};
+  const alsoField = {
+    ...(alsoMessageId ? { alsoMessageId, alsoNumber } : {}),
+    ...(alsoWatchError ? { alsoWatchError } : {}),
+    ...(alsoError ? { alsoError } : {}),
+  };
 
   if (trackingFailed) {
     const error =

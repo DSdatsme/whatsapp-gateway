@@ -13,6 +13,9 @@ export interface SendResult {
   correlationId: string;
   messageId?: string;
   viaTemplate?: boolean;
+  alsoMessageId?: string;
+  alsoNumber?: string;
+  alsoWatchError?: string;
   alsoError?: string;
 }
 
@@ -196,10 +199,11 @@ export function createClient(options: GatewayClientOptions) {
     return res.json();
   }
 
-  async function getInbox(opts: { since?: number; limit?: number } = {}): Promise<InboxMessage[]> {
+  async function getInbox(opts: { since?: number; limit?: number; from?: string } = {}): Promise<InboxMessage[]> {
     const query = new URLSearchParams();
     if (opts.since !== undefined) query.set("since", String(opts.since));
     if (opts.limit !== undefined) query.set("limit", String(opts.limit));
+    if (opts.from !== undefined) query.set("from", opts.from);
     const suffix = query.toString() ? `?${query}` : "";
     const res = await fetch(`${options.baseUrl}/api/inbox${suffix}`, {
       headers: { Authorization: `Bearer ${options.apiKey}` },

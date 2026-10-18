@@ -124,3 +124,29 @@ describe("inbox", () => {
     expect(await listInboxMessages()).toEqual([]);
   });
 });
+
+describe("per-number inboxes", () => {
+  const OTHER = "919876543210";
+
+  it("keeps a watched number's messages out of the default list, and the recipient's out of theirs", async () => {
+    await addInboxMessage(message("mine"));
+    await addInboxMessage(message("theirs"), OTHER);
+    expect((await listInboxMessages()).map((m) => m.id)).toEqual(["mine"]);
+    expect((await listInboxMessages({ from: OTHER })).map((m) => m.id)).toEqual(["theirs"]);
+  });
+
+  it("lists nothing for a number that was never stored", async () => {
+    await addInboxMessage(message("mine"));
+    expect(await listInboxMessages({ from: "919999999999" })).toEqual([]);
+  });
+
+  it("keeps one person's flood from pushing out another's messages", async () => {
+    await addInboxMessage(message("mine"));
+    for (let i = 1; i <= 205; i++) {
+      now = 2_000_000_100_000 + i;
+      await addInboxMessage(message(`o${i}`), OTHER);
+    }
+    expect((await listInboxMessages({ limit: 1000 })).some((m) => m.id === "mine")).toBe(true);
+    expect(await listInboxMessages({ from: OTHER, limit: 1000 })).toHaveLength(200);
+  });
+});

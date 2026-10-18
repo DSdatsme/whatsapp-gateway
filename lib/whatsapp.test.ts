@@ -143,6 +143,20 @@ describe("buildTemplatePayload", () => {
   });
 });
 
+describe("sendWhatsAppMessage recipient id", () => {
+  it("returns the WhatsApp id Meta resolved the recipient to, which can differ from the number sent", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        messages: [{ id: "wamid.1" }],
+        contacts: [{ input: "525512345678", wa_id: "5215512345678" }],
+      }),
+    }) as unknown as typeof fetch;
+    const result = await sendWhatsAppMessage(buildNotificationPayload("525512345678", "hi"));
+    expect(result).toEqual({ messageId: "wamid.1", recipientId: "5215512345678" });
+  });
+});
+
 describe("sendWhatsAppMessage resilience", () => {
   it("gives the Graph API call a timeout signal so a hung request can't stall the function", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
