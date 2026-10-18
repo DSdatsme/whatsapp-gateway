@@ -24,6 +24,14 @@ export interface MessageStatus {
   error?: { code?: number; title?: string; details?: string };
 }
 
+export interface InboxMessage {
+  id: string;
+  type: string;
+  text?: string;
+  timestamp: number;
+  contextMessageId?: string;
+}
+
 export interface WindowState {
   open: boolean;
   lastInboundAt: number | null;
@@ -188,5 +196,17 @@ export function createClient(options: GatewayClientOptions) {
     return res.json();
   }
 
-  return { sendNotification, sendApproval, sendPrompt, sendSelect, sendTemplate, getMessageStatus, getWindow };
+  async function getInbox(opts: { since?: number; limit?: number } = {}): Promise<InboxMessage[]> {
+    const query = new URLSearchParams();
+    if (opts.since !== undefined) query.set("since", String(opts.since));
+    if (opts.limit !== undefined) query.set("limit", String(opts.limit));
+    const suffix = query.toString() ? `?${query}` : "";
+    const res = await fetch(`${options.baseUrl}/api/inbox${suffix}`, {
+      headers: { Authorization: `Bearer ${options.apiKey}` },
+    });
+    if (!res.ok) throw new GatewayError(`inbox lookup failed (${res.status})`);
+    return (await res.json()).messages;
+  }
+
+  return { sendNotification, sendApproval, sendPrompt, sendSelect, sendTemplate, getMessageStatus, getWindow, getInbox };
 }

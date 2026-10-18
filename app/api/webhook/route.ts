@@ -10,6 +10,7 @@ import {
 import { deliverCallback } from "@/lib/callback";
 import { recordMessageStatus } from "@/lib/message-status";
 import { recordInbound } from "@/lib/window";
+import { addInboxMessage } from "@/lib/inbox";
 
 export const runtime = "nodejs";
 
@@ -24,6 +25,8 @@ interface WhatsAppStatus {
   timestamp?: string;
   errors?: { code?: number; title?: string; message?: string; error_data?: { details?: string } }[];
 }
+
+const MAX_INBOX_TEXT_LENGTH = 1000;
 
 const WINDOW_OPENING_TYPES = new Set([
   "text", "image", "audio", "video", "document", "sticker", "location", "contacts", "interactive", "button",
@@ -67,11 +70,30 @@ async function handleStatus(status: WhatsAppStatus) {
   });
 }
 
-async function recordWindowOpening(message: Record<string, any>) {
-  const opensWindow = message.type === undefined || WINDOW_OPENING_TYPES.has(message.type);
-  if (opensWindow && message.from === getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER")) {
-    await recordInbound(secondsToMs(message.timestamp) ?? Date.now());
-  }
+async function recordFromRecipient(message: Record<string, any>) {
+  if (message.from !== getRequiredEnv("WHATSAPP_RECIPIENT_NUMBER")) return;
+
+  const at = secondsToMs(message.timestamp) ?? Date.now();
+  if (message.type === undefined || WINDOW_OPENING_TYPES.has(message.type)) await recordInbound(at);
+  if (!message.id || (message.type === "reaction" && !message.reaction?.emoji)) return;
+
+  const text: string | undefined =
+    message.text?.body ??
+    message.interactive?.button_reply?.title ??
+    message.interactive?.list_reply?.title ??
+    message.button?.text ??
+    message.reaction?.emoji ??
+    message.image?.caption ??
+    message.video?.caption ??
+    message.document?.caption;
+  const contextMessageId: string | undefined = message.context?.id ?? message.reaction?.message_id;
+  await addInboxMessage({
+    id: message.id,
+    type: message.type ?? "unknown",
+    ...(text ? { text: text.slice(0, MAX_INBOX_TEXT_LENGTH) } : {}),
+    timestamp: at,
+    ...(contextMessageId ? { contextMessageId } : {}),
+  });
 }
 
 async function resolveReply(message: Record<string, any>) {
@@ -155,7 +177,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // Replies first: a failing telemetry write must not hold up resolving one, but still fails the request so Meta retries.
   for (const message of messages) await resolveReply(message);
-  for (const message of messages) await recordWindowOpening(message);
+  for (const message of messages) await recordFromRecipient(message);
   for (const status of statuses) await handleStatus(status);
 
   return NextResponse.json({ ok: true });

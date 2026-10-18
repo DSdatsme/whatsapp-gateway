@@ -41,6 +41,7 @@ vi.mock("@/lib/redis", () => ({
   },
 }));
 vi.mock("@/lib/window", () => ({ recordInbound: vi.fn(async () => {}) }));
+vi.mock("@/lib/inbox", () => ({ addInboxMessage: vi.fn(async () => {}) }));
 vi.mock("@/lib/message-status", () => ({ recordMessageStatus: vi.fn(async () => {}) }));
 vi.mock("@/lib/callback", () => ({ deliverCallback: vi.fn(async () => {}) }));
 vi.mock("next/server", async (importOriginal) => ({

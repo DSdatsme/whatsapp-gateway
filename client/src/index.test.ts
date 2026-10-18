@@ -263,3 +263,30 @@ describe("response handling", () => {
     await expect(client.sendNotification("hi")).rejects.toThrow(GatewayError);
   });
 });
+
+describe("getInbox", () => {
+  it("returns the recent messages the recipient sent to the business number", async () => {
+    const messages = [{ id: "m1", type: "text", text: "ok", timestamp: 1_700_000_000_000 }];
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ messages }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    expect(await client.getInbox()).toEqual(messages);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://gateway.example/api/inbox",
+      expect.objectContaining({ headers: { Authorization: "Bearer test-key" } })
+    );
+  });
+
+  it("passes since and limit as query parameters", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ messages: [] }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    await client.getInbox({ since: 1_700_000_000_000, limit: 5 });
+    expect(fetchMock.mock.calls[0][0]).toBe("https://gateway.example/api/inbox?since=1700000000000&limit=5");
+  });
+
+  it("throws GatewayError when the gateway rejects the request", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) }) as unknown as typeof fetch;
+    await expect(client.getInbox()).rejects.toThrow(/401/);
+  });
+});

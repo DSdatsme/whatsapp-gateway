@@ -10,10 +10,25 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH" # cron's PATH
 
 DEFAULT_URL="https://whatsapp-gateway.darshitkumarsuratwala.store"
 CONFIG_FILE="$HOME/.config/whatsapp-gateway/env"
+SENT_LOG="$HOME/.config/whatsapp-gateway/sent.jsonl"
 MAX_PARAM_CHARS="${WA_MAX_PARAM_CHARS:-700}"
 
 log() { printf '%s wa-notify: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 fail() { log "$*" >&2; exit 1; }
+
+record_send() {
+  local message_id
+  message_id=$(jq -r '.messageId // empty' <<<"$1") || return 0
+  [[ -n "$message_id" ]] || return 0
+  (
+    umask 077
+    mkdir -p "${SENT_LOG%/*}"
+    jq -nc --arg id "$message_id" --arg corr "$(jq -r '.correlationId // empty' <<<"$1")" \
+      --argjson at "$(( $(date +%s) * 1000 ))" --arg preview "${2:0:80}" \
+      '{messageId: $id, correlationId: $corr, sentAt: $at, preview: $preview}' >> "$SENT_LOG"
+    if (( $(wc -l < "$SENT_LOG") > 200 )); then tail -n 100 "$SENT_LOG" > "$SENT_LOG.tmp" && mv "$SENT_LOG.tmp" "$SENT_LOG"; fi
+  ) 2>/dev/null || true
+}
 
 command -v jq >/dev/null || fail "jq not found on PATH ($PATH)"
 
@@ -79,7 +94,7 @@ status="${response##*$'\n'}"
 payload="${response%$'\n'*}"
 
 case "$status" in
-  200) log "accepted by WhatsApp, not yet confirmed delivered: $payload" ;;
+  200) log "accepted by WhatsApp, not yet confirmed delivered: $payload"; record_send "$payload" "[$source_label] $message" ;;
   5??) fail "gateway returned HTTP $status ${payload:-(empty body)} (not retrying: the message may already have been sent)" ;;
   *)   fail "gateway returned HTTP $status ${payload:-(empty body)}" ;;
 esac

@@ -16,6 +16,9 @@ vi.mock("@/lib/message-status", () => ({
 vi.mock("@/lib/window", () => ({
   recordInbound: vi.fn(async () => {}),
 }));
+vi.mock("@/lib/inbox", () => ({
+  addInboxMessage: vi.fn(async () => {}),
+}));
 
 // after() needs a real request scope, so capture its tasks and run them with flushAfter().
 const afterTasks: Array<() => unknown> = [];
@@ -34,6 +37,7 @@ import {
 import { deliverCallback } from "@/lib/callback";
 import { recordMessageStatus } from "@/lib/message-status";
 import { recordInbound } from "@/lib/window";
+import { addInboxMessage } from "@/lib/inbox";
 
 const APP_SECRET = "test-app-secret";
 
@@ -643,5 +647,97 @@ describe("POST /api/webhook pinned inbound decisions", () => {
     vi.mocked(recordInbound).mockRejectedValueOnce(new Error("redis down"));
     await expect(POST(signedRequest(payload({ ...textMessage, timestamp: "1700000000" })))).rejects.toThrow("redis down");
     expect(afterTasks).toHaveLength(1);
+  });
+});
+
+describe("POST /api/webhook inbox", () => {
+  const deliver = (message: Record<string, unknown>) =>
+    POST(signedRequest({ entry: [{ changes: [{ value: { messages: [message] } }] }] }));
+  const base = { id: "wamid.in1", from: SENDER, timestamp: "1700000000" };
+
+  beforeEach(() => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue(null);
+  });
+
+  it("stores a text message from the recipient", async () => {
+    await deliver({ ...base, type: "text", text: { body: "ok got it" } });
+    expect(addInboxMessage).toHaveBeenCalledWith({ id: "wamid.in1", type: "text", text: "ok got it", timestamp: 1_700_000_000_000 });
+  });
+
+  it("keeps which of our messages a swipe-reply answers", async () => {
+    await deliver({ ...base, type: "text", text: { body: "yes" }, context: { id: "wamid.sent" } });
+    expect(addInboxMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "yes", contextMessageId: "wamid.sent" }));
+  });
+
+  it("stores a reaction as its emoji, tied to the message it was left on", async () => {
+    await deliver({ ...base, type: "reaction", reaction: { message_id: "wamid.sent", emoji: "👍" } });
+    expect(addInboxMessage).toHaveBeenCalledWith({
+      id: "wamid.in1",
+      type: "reaction",
+      text: "👍",
+      timestamp: 1_700_000_000_000,
+      contextMessageId: "wamid.sent",
+    });
+  });
+
+  it("stores a button reply by its title", async () => {
+    await deliver({ ...base, type: "interactive", interactive: { button_reply: { id: "approve:c1", title: "Approve" } } });
+    expect(addInboxMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "interactive", text: "Approve" }));
+  });
+
+  it("stores a template quick-reply tap by its text", async () => {
+    await deliver({ ...base, type: "button", button: { text: "Yes, continue", payload: "p1" }, context: { id: "wamid.sent" } });
+    expect(addInboxMessage).toHaveBeenCalledWith({
+      id: "wamid.in1",
+      type: "button",
+      text: "Yes, continue",
+      timestamp: 1_700_000_000_000,
+      contextMessageId: "wamid.sent",
+    });
+  });
+
+  it.each([[{ message_id: "wamid.sent" }], [{ message_id: "wamid.sent", emoji: "" }]])(
+    "does not store a removed reaction (no emoji): %j",
+    async (reaction) => {
+      await deliver({ ...base, type: "reaction", reaction });
+      expect(addInboxMessage).not.toHaveBeenCalled();
+    }
+  );
+
+  it("stores a non-text message by its type, with the caption if it has one", async () => {
+    await deliver({ ...base, type: "image", image: { id: "media.1", caption: "look" } });
+    await deliver({ ...base, id: "wamid.in2", type: "image", image: { id: "media.2" } });
+    expect(addInboxMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: "image", text: "look" }));
+    expect(addInboxMessage).toHaveBeenNthCalledWith(2, { id: "wamid.in2", type: "image", timestamp: 1_700_000_000_000 });
+  });
+
+  it("truncates a very long message", async () => {
+    await deliver({ ...base, type: "text", text: { body: "x".repeat(5000) } });
+    expect(vi.mocked(addInboxMessage).mock.calls[0][0].text).toHaveLength(1000);
+  });
+
+  it("does not store messages from anyone but the recipient", async () => {
+    await deliver({ ...base, from: "19995551234", type: "text", text: { body: "spam" } });
+    expect(addInboxMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not store a message that has no id", async () => {
+    await deliver({ from: SENDER, type: "text", timestamp: "1700000000", text: { body: "hi" } });
+    expect(addInboxMessage).not.toHaveBeenCalled();
+  });
+
+  it("resolves the reply first and still fails the request if storing the message fails, so Meta retries", async () => {
+    vi.mocked(resolveCorrelationId).mockResolvedValue({ correlationId: "c1" });
+    vi.mocked(markReplied).mockResolvedValue({
+      status: "replied",
+      type: "prompt",
+      whatsappMessageId: "wamid.p",
+      createdAt: 1,
+      value: "yes",
+      receivedAt: 2,
+    });
+    vi.mocked(addInboxMessage).mockRejectedValueOnce(new Error("redis down"));
+    await expect(deliver({ ...base, type: "text", text: { body: "yes" } })).rejects.toThrow("redis down");
+    expect(markReplied).toHaveBeenCalled();
   });
 });
